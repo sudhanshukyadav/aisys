@@ -1,0 +1,8 @@
+name = "aisys-landing"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# Your worker code references env.WAITLIST_KV:
+# [[kv_namespaces]]
+# binding = "WAITLIST_KV"
+# id = "<your-kv-namespace-id>"
