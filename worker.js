@@ -54,3 +54,36 @@ async function handleWaitlist(request, env) {
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
 }
+/**
+ * Converts a JSON schema object into an array of CREATE TABLE SQL statements.
+ * @param {Object} schemaConfig - The parsed JSON containing table and column definitions.
+ * @returns {string[]} Array of SQL DDL queries.
+ */
+function buildCreateTableQueries(schemaConfig) {
+  const queries = [];
+  const tables = schemaConfig.tables || {};
+
+  for (const [tableName, columns] of Object.entries(tables)) {
+    const columnDefinitions = Object.entries(columns)
+      .map(([colName, colType]) => `"${colName}" ${colType}`)
+      .join(',\n    ');
+
+    const query = `CREATE TABLE IF NOT EXISTS "${tableName}" (\n    ${columnDefinitions}\n);`;
+    queries.push(query);
+  }
+
+  return queries;
+}
+
+/**
+ * Executes the generated DDL statements on Cloudflare D1.
+ * @param {D1Database} db - Cloudflare D1 binding (env.DB).
+ * @param {Object} schemaConfig - The parsed JSON schema.
+ */
+async function initializeDatabaseFromSchema(db, schemaConfig) {
+  const sqlStatements = buildCreateTableQueries(schemaConfig);
+  const batchStatements = sqlStatements.map(sql => db.prepare(sql));
+  
+  await db.batch(batchStatements);
+  return sqlStatements;
+}
