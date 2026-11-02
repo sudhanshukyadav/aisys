@@ -22,11 +22,11 @@
       "id": "45b60fcb4dec4f21aeebe17f05f9a4b5"
     }
   ],
-"services": [
-  {
-    "binding": "DB_SERVICE",
-    "service": "aisys-db",
-    "entrypoint": "DbService"
-  }
-]
+  "services": [
+    {
+      "binding": "DB_SERVICE",
+      "service": "aisys-db",
+      "entrypoint": "DbService"
+    }
+  ]
 }
