@@ -12,7 +12,7 @@ export default {
       }
     }
 
-    // 2. User authentication
+    // 2. User authentication via aisys-db
     if (url.pathname === '/api/login' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
@@ -50,7 +50,9 @@ async function handleWaitlist(request, env) {
     return jsonResponse({ error: 'Valid email required' }, 400);
   }
   if (env.WAITLIST_KV) {
-    await env.WAITLIST_KV.put('waitlist:' + email + ':' + Date.now(), JSON.stringify({ email }));
+    try {
+      await env.WAITLIST_KV.put('waitlist:' + email + ':' + Date.now(), JSON.stringify({ email }));
+    } catch {}
   }
   return jsonResponse({ message: "You're on the list!", email });
 }
