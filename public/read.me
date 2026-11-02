@@ -1,0 +1,12 @@
+IP Cameras 
+   │ (RTMP / RTSP push)
+   ▼
+Your RTMP Ingestion Server (e.g., MediaMTX, SRS, Nginx-RTMP)
+   │ Transmuxes directly in-memory to ephemeral HLS chunks (.m3u8)
+   │ Zero recording / zero writes to disk or R2
+   ▼
+https://stream.yourdomain.com/<LOCATION>/live/<CAM>/index.m3u8
+   │ (Consumed via stream_url from D1 cameras table)
+   ▼
+Browser / public/live.html
+   └── HLS.js running in zero-backbuffer live mode
