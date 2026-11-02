@@ -207,13 +207,13 @@ document.addEventListener('DOMContentLoaded', () => {
 else if (currentActiveTable === 'cameras') {
   const defaultLoc = record?.location_id || (currentUserSession?.locationId || 'HQ-01');
   const defaultCam = record?.camera_id || 'CAM-01';
-  const defaultUrl = record?.stream_url || `https://stream.aisys.cam/${defaultLoc}/live/${defaultCam}/index.m3u8`;
+  
 
   fields = [
     { name: 'camera_id', label: 'Camera ID', val: record?.camera_id || '', readOnly: !!record },
     { name: 'location_id', label: 'Location ID', val: defaultLoc },
     { name: 'name', label: 'Camera Name', val: record?.name || '' },
-    { name: 'stream_url', label: 'Stream URL', val: defaultUrl }
+
   ];
 
     } else if (currentActiveTable === 'users') {
