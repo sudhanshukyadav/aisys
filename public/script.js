@@ -3,12 +3,18 @@ document.addEventListener('DOMContentLoaded', () => {
   let cachedTables = {};
   let currentActiveTable = 'locations';
 
+  // --- Element Selectors ---
   const securityBtn = document.getElementById('securityBtn');
   const securityModal = document.getElementById('securityModal');
   const modalClose = document.getElementById('modalClose');
   const loginForm = document.getElementById('loginForm');
   const loginErr = document.getElementById('loginErr');
   const loginSubmitBtn = document.getElementById('loginSubmitBtn');
+
+  const waitlistForm = document.getElementById('waitlistForm');
+  const waitlistEmail = document.getElementById('waitlistEmail');
+  const waitlistSubmitBtn = document.getElementById('waitlistSubmitBtn');
+  const waitlistMsg = document.getElementById('waitlistMsg');
 
   const adminModal = document.getElementById('adminModal');
   const adminModalClose = document.getElementById('adminModalClose');
@@ -18,7 +24,39 @@ document.addEventListener('DOMContentLoaded', () => {
   const recordFormFields = document.getElementById('recordFormFields');
   const drawerTitle = document.getElementById('drawerTitle');
 
-  // Open & Close Security Modal
+  // --- Waitlist Handler ---
+  if (waitlistForm) {
+    waitlistForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      waitlistSubmitBtn.disabled = true;
+      waitlistMsg.textContent = 'Submitting...';
+      waitlistMsg.style.color = '#38bdf8';
+
+      try {
+        const res = await fetch('/api/waitlist', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: waitlistEmail.value })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          waitlistMsg.textContent = data.message || 'You are on the list!';
+          waitlistMsg.style.color = '#4ade80';
+          waitlistEmail.value = '';
+        } else {
+          waitlistMsg.textContent = data.error || 'Failed to submit.';
+          waitlistMsg.style.color = '#f87171';
+        }
+      } catch (err) {
+        waitlistMsg.textContent = 'Network error.';
+        waitlistMsg.style.color = '#f87171';
+      } finally {
+        waitlistSubmitBtn.disabled = false;
+      }
+    });
+  }
+
+  // --- Modal Open/Close Controls ---
   if (securityBtn) {
     securityBtn.addEventListener('click', (e) => {
       e.preventDefault();
@@ -33,7 +71,19 @@ document.addEventListener('DOMContentLoaded', () => {
     adminModalClose.addEventListener('click', () => adminModal.classList.remove('open'));
   }
 
-  // Login Authentication Handler
+  window.addEventListener('click', (e) => {
+    if (e.target === securityModal) securityModal.classList.remove('open');
+    if (e.target === adminModal) adminModal.classList.remove('open');
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      securityModal.classList.remove('open');
+      adminModal.classList.remove('open');
+    }
+  });
+
+  // --- Login Handler ---
   if (loginForm) {
     loginForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -76,7 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Admin Explorer Logic
+  // --- Admin Explorer Controller ---
   async function openAdminExplorer() {
     adminModal.classList.add('open');
     await loadAdminTables();
@@ -103,7 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const rows = cachedTables[currentActiveTable] || [];
     if (rows.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;">No records in ${currentActiveTable}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 2rem;">No records in ${currentActiveTable}</td></tr>`;
       return;
     }
 
@@ -157,7 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
         { name: 'username', label: 'Username', val: record?.username || '', readOnly: !!record },
         { name: 'role', label: 'Role (admin/superuser/operator/viewer)', val: record?.role || 'viewer' },
         { name: 'allowed_cameras', label: 'Allowed Cameras (JSON array)', val: record?.allowed_cameras || '[]' },
-        { name: 'password', label: record ? 'Change Password (optional)' : 'Password', val: '', isPassword: true }
+        { name: 'password', label: record ? 'Change Password (leave blank to keep)' : 'Password', val: '', isPassword: true }
       ];
     }
 
