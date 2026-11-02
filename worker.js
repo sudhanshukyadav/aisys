@@ -2,38 +2,53 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1. Fetch sites for login modal dropdown
-    if (url.pathname === '/api/sites' && request.method === 'GET') {
-      try {
-        const sites = await env.DB_SERVICE.getSites();
-        return jsonResponse({ sites });
-      } catch (err) {
-        return jsonResponse({ error: 'Database service unavailable' }, 502);
-      }
-    }
-
-    // 2. User authentication via aisys-db
+    // 1. Authentication & Registration
     if (url.pathname === '/api/login' && request.method === 'POST') {
       let body;
       try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
 
       try {
-        const result = await env.DB_SERVICE.authenticateUser(body.siteId, body.username, body.password);
+        const result = await env.DB_SERVICE.authenticateOrRegisterUser(body.locationId, body.username, body.password);
         if (result.success) {
-          return jsonResponse({ status: 'success', user: result.user }, 200);
+          return jsonResponse({ status: 'success', isNewUser: result.isNewUser, user: result.user }, 200);
         }
         return jsonResponse({ error: result.error }, result.status || 401);
       } catch (err) {
-        return jsonResponse({ error: 'Authentication service error' }, 502);
+        return jsonResponse({ error: 'Database service unavailable' }, 502);
       }
     }
 
-    // 3. Waitlist submissions (KV)
+    // 2. Admin: Get all records from all tables
+    if (url.pathname === '/api/admin/tables' && request.method === 'GET') {
+      const adminUserId = request.headers.get('x-admin-userid');
+      try {
+        const result = await env.DB_SERVICE.adminGetAllTables(adminUserId);
+        return jsonResponse(result, result.status || (result.success ? 200 : 403));
+      } catch (err) {
+        return jsonResponse({ error: 'Database service unavailable' }, 502);
+      }
+    }
+
+    // 3. Admin: Insert or update records
+    if (url.pathname === '/api/admin/tables/save' && request.method === 'POST') {
+      const adminUserId = request.headers.get('x-admin-userid');
+      let body;
+      try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
+
+      try {
+        const result = await env.DB_SERVICE.adminSaveRecord(adminUserId, body.table, body.data, !!body.isUpdate);
+        return jsonResponse(result, result.status || (result.success ? 200 : 400));
+      } catch (err) {
+        return jsonResponse({ error: 'Database service unavailable' }, 502);
+      }
+    }
+
+    // 4. Waitlist submissions
     if (url.pathname === '/api/waitlist' && request.method === 'POST') {
       return handleWaitlist(request, env);
     }
 
-    // 4. Health check
+    // 5. Health Check
     if (url.pathname === '/api/health') {
       return jsonResponse({ status: 'ok', timestamp: Date.now() });
     }
