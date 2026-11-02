@@ -24,7 +24,7 @@
   ],
   "services": [
     {
-      "binding": "DB_SERVICE",
+      "binding": "DB",
       "service": "aisys-db",
       "entrypoint": "DbService"
     }
