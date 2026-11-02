@@ -8,13 +8,14 @@ export default {
       try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
 
       try {
-        const result = await env.DB_SERVICE.authenticateOrRegisterUser(body.locationId, body.username, body.password);
+        const result = await env.DB.authenticateOrRegisterUser(body.locationId, body.username, body.password);
         if (result.success) {
           return jsonResponse({ status: 'success', isNewUser: result.isNewUser, user: result.user }, 200);
         }
         return jsonResponse({ error: result.error }, result.status || 401);
       } catch (err) {
-        return jsonResponse({ error: 'Database service unavailable' }, 502);
+        console.error('Database RPC error:', err);
+        return jsonResponse({ error: 'Database service unavailable', details: err?.message || String(err) }, 502);
       }
     }
 
@@ -22,10 +23,11 @@ export default {
     if (url.pathname === '/api/admin/tables' && request.method === 'GET') {
       const adminUserId = request.headers.get('x-admin-userid');
       try {
-        const result = await env.DB_SERVICE.adminGetAllTables(adminUserId);
+        const result = await env.DB.adminGetAllTables(adminUserId);
         return jsonResponse(result, result.status || (result.success ? 200 : 403));
       } catch (err) {
-        return jsonResponse({ error: 'Database service unavailable' }, 502);
+        console.error('Database RPC error:', err);
+        return jsonResponse({ error: 'Database service unavailable', details: err?.message || String(err) }, 502);
       }
     }
 
@@ -36,10 +38,11 @@ export default {
       try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid JSON' }, 400); }
 
       try {
-        const result = await env.DB_SERVICE.adminSaveRecord(adminUserId, body.table, body.data, !!body.isUpdate);
+        const result = await env.DB.adminSaveRecord(adminUserId, body.table, body.data, !!body.isUpdate);
         return jsonResponse(result, result.status || (result.success ? 200 : 400));
       } catch (err) {
-        return jsonResponse({ error: 'Database service unavailable' }, 502);
+        console.error('Database RPC error:', err);
+        return jsonResponse({ error: 'Database service unavailable', details: err?.message || String(err) }, 502);
       }
     }
 
