@@ -44,43 +44,39 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Inside public/live.js -> camera rendering loop:
 cameras.forEach((cam, index) => {
-  const tile = document.createElement('div');
-  tile.className = 'camera-tile';
-  tile.id = `tile-${cam.camera_id}`;
+    const tile = document.createElement('div');
+    tile.className = 'camera-tile';
+    tile.id = `tile-${cam.camera_id}`;
 
-  tile.innerHTML = `
-    <div class="camera-tile-header">
-      <span class="cam-status-dot" id="dot-${index}"></span>
-      <span class="cam-name">${cam.name} (${cam.camera_id})</span>
-      <button type="button" class="fullscreen-tile-btn" title="Toggle Fullscreen">⛶</button>
-    </div>
-    <div class="video-container" id="video-container-${index}">
-      <video id="video-${index}" playsinline autoplay muted></video>
-    </div>
-  `;
+    tile.innerHTML = `
+      <div class="camera-tile-header">
+        <span class="cam-status-dot" id="dot-${index}"></span>
+        <span class="cam-name">${cam.name} (${cam.camera_id})</span>
+        <button type="button" class="fullscreen-tile-btn" title="Toggle Fullscreen">⛶</button>
+      </div>
+      <div class="video-container" id="video-container-${index}">
+        <video id="video-${index}" playsinline autoplay muted></video>
+      </div>
+    `;
 
-  cameraGrid.appendChild(tile);
+    cameraGrid.appendChild(tile);
 
-  const videoEl = tile.querySelector(`#video-${index}`);
-  const statusDot = tile.querySelector(`#dot-${index}`);
+    const videoEl = tile.querySelector(`#video-${index}`);
+    const statusDot = tile.querySelector(`#dot-${index}`);
 
-  // Resolve stream URL using the standardized <LOCATION>/live/<CAM>/index.m3u8 hierarchy
-  const locationCode = (cam.location_id || user.locationId).toUpperCase();
-  const cameraCode = cam.camera_id.toUpperCase();
-  const streamUrl = cam.stream_url && cam.stream_url.trim().length > 0
-    ? cam.stream_url.trim()
-    : `https://stream.aisys.cam/${locationCode}/live/${cameraCode}/index.m3u8`;
+    // Pure dynamic URL — no database column required
+    const streamEndpoint = `https://stream.aisys.cam/${user.locationId}/live/${cam.camera_id}/index.m3u8`;
 
-  initLiveHlsPlayer(videoEl, statusDot, streamUrl);
+    initLiveHlsPlayer(videoEl, statusDot, streamEndpoint);
 
-  tile.querySelector('.fullscreen-tile-btn').addEventListener('click', () => {
-    if (!document.fullscreenElement) {
-      tile.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen().catch(() => {});
-    }
+    tile.querySelector('.fullscreen-tile-btn').addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        tile.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    });
   });
-});
 
   // Grid layout selector buttons
   document.querySelectorAll('.grid-btn').forEach(btn => {
