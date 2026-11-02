@@ -109,11 +109,20 @@ document.addEventListener('DOMContentLoaded', () => {
           currentUserSession = data.user;
           securityModal.classList.remove('open');
 
-          if (data.user.role === 'admin') {
-            openAdminExplorer();
-          } else {
-            alert(`Welcome ${data.user.username} (${data.user.role}). Authorized cameras: ${data.user.cameras.length}`);
-          }
+         // Store user session data in browser
+sessionStorage.setItem('aisys_session', JSON.stringify(data.user));
+
+if (data.user.role === 'admin') {
+  // If admin has configured cameras, ask whether to open streams or database editor
+  if (confirm('Authentication successful. Open Live Video Stream view?\n(Cancel opens Database Explorer)')) {
+    window.location.href = '/live.html';
+  } else {
+    openAdminExplorer();
+  }
+} else {
+  // Direct operators and viewers straight to live monitor
+  window.location.href = '/live.html';
+}
         } else {
           loginErr.textContent = data.error || 'Authentication failed.';
         }
