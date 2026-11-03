@@ -7,19 +7,13 @@
     "directory": "./public"
   },
   "routes": [
-    {
-      "pattern": "aisys.cam/*",
-      "zone_name": "aisys.cam"
-    },
-    {
-      "pattern": "www.aisys.cam/*",
-      "zone_name": "aisys.cam"
-    }
+    { "pattern": "aisys.cam/*", "zone_name": "aisys.cam" },
+    { "pattern": "www.aisys.cam/*", "zone_name": "aisys.cam" }
   ],
-  "kv_namespaces": [
+  "r2_buckets": [
     {
-      "binding": "WAITLIST_KV",
-      "id": "45b60fcb4dec4f21aeebe17f05f9a4b5"
+      "binding": "MEDIA_BUCKET",
+      "bucket_name": "aisys-media"
     }
   ],
   "services": [
