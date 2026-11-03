@@ -228,3 +228,13 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 }
+// Fallback: Serve static assets (HTML, JS, CSS) from public/
+    if (env.ASSETS) {
+      return env.ASSETS.fetch(request);
+    }
+
+    return new Response('Not Found', {
+      status: 404,
+      headers: corsHeaders()
+    });
+  
