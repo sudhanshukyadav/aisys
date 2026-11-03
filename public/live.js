@@ -1,141 +1,306 @@
-document.addEventListener('DOMContentLoaded', () => {
-  const sessionRaw = sessionStorage.getItem('aisys_session');
-  if (!sessionRaw) {
-    window.location.href = '/';
-    return;
-  }
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
 
-  const user = JSON.parse(sessionRaw);
-  const locationBadge = document.getElementById('locationBadge');
-  const userPill = document.getElementById('userPill');
-  const cameraGrid = document.getElementById('cameraGrid');
-  const logoutBtn = document.getElementById('logoutBtn');
+    // 1. CORS Preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders()
+      });
+    }
 
-  // Display user & location metadata
-  locationBadge.textContent = `${user.locationId} — ${user.location?.description || 'Active Facility'}`;
-  userPill.textContent = `${user.username} (${user.role})`;
-
-  // Logout handler
-  logoutBtn.addEventListener('click', () => {
-    sessionStorage.removeItem('aisys_session');
-    window.location.href = '/';
-  });
-
-  // Render camera tiles
-  const cameras = user.cameras || [];
-  if (cameras.length === 0) {
-    cameraGrid.innerHTML = `
-      <div class="no-cams-alert">
-        <h3>No Authorized Cameras</h3>
-        <p>No video channels have been assigned to your profile for this location.</p>
-      </div>
-    `;
-    return;
-  }
-
-  // Adjust default grid layout based on camera count
-  if (cameras.length > 4) {
-    setGrid(3);
-  } else if (cameras.length > 1) {
-    setGrid(2);
-  } else {
-    setGrid(1);
-  }
-
-// Inside public/live.js -> camera rendering loop:
-cameras.forEach((cam, index) => {
-    const tile = document.createElement('div');
-    tile.className = 'camera-tile';
-    tile.id = `tile-${cam.camera_id}`;
-
-    tile.innerHTML = `
-      <div class="camera-tile-header">
-        <span class="cam-status-dot" id="dot-${index}"></span>
-        <span class="cam-name">${cam.name} (${cam.camera_id})</span>
-        <button type="button" class="fullscreen-tile-btn" title="Toggle Fullscreen">⛶</button>
-      </div>
-      <div class="video-container" id="video-container-${index}">
-        <video id="video-${index}" playsinline autoplay muted></video>
-      </div>
-    `;
-
-    cameraGrid.appendChild(tile);
-
-    const videoEl = tile.querySelector(`#video-${index}`);
-    const statusDot = tile.querySelector(`#dot-${index}`);
-
-    // Pure dynamic URL — no database column required
-    const streamEndpoint = `https://stream.aisys.cam/${user.locationId}/live/${cam.camera_id}/index.m3u8`;
-
-    initLiveHlsPlayer(videoEl, statusDot, streamEndpoint);
-
-    tile.querySelector('.fullscreen-tile-btn').addEventListener('click', () => {
-      if (!document.fullscreenElement) {
-        tile.requestFullscreen().catch(() => {});
-      } else {
-        document.exitFullscreen().catch(() => {});
+    // 2. Direct Media Upload to R2 (for S: Drive Sync Watcher)
+    // Format: PUT /upload/:location/:category/:cam/:fileName
+    if (url.pathname.startsWith('/upload/') && request.method === 'PUT') {
+      const token = request.headers.get('x-media-token');
+      if (token !== 'aisys-media-secret-key') {
+        return jsonResponse({ error: 'Unauthorized: Invalid media upload token' }, 401);
       }
-    });
-  });
 
-  // Grid layout selector buttons
-  document.querySelectorAll('.grid-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.grid-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      setGrid(parseInt(btn.dataset.grid, 10));
-    });
-  });
+      if (!env.MEDIA_BUCKET) {
+        return jsonResponse({ error: "R2 binding 'MEDIA_BUCKET' not configured" }, 500);
+      }
 
-  function setGrid(columns) {
-    cameraGrid.className = `camera-grid grid-${columns}`;
-    document.querySelectorAll('.grid-btn').forEach(b => {
-      b.classList.toggle('active', parseInt(b.dataset.grid, 10) === columns);
-    });
-  }
+      const pathSegments = url.pathname.slice('/upload/'.length).split('/');
+      if (pathSegments.length < 4) {
+        return jsonResponse({
+          error: 'Expected path format: /upload/:locationCode/:category/:camName/:fileName'
+        }, 400);
+      }
 
-  function mountPlayer(container, url) {
-    if (!url) {
-      container.innerHTML = '<div class="stream-error">Stream URL Missing</div>';
-      return;
-    }
+      const locationCode = decodeURIComponent(pathSegments[0]).trim().toUpperCase();
+      const rawCategory  = decodeURIComponent(pathSegments[1]).trim().toUpperCase();
+      const camName      = decodeURIComponent(pathSegments[2]).trim().toUpperCase();
+      const fileName     = decodeURIComponent(pathSegments.slice(3).join('/'));
 
-    // 1. Cloudflare Stream Iframe Embed
-    if (url.includes('iframe.videodelivery.net')) {
-      const iframe = document.createElement('iframe');
-      iframe.src = `${url}?autoplay=true&muted=true&controls=true&preload=auto`;
-      iframe.className = 'stream-player';
-      iframe.allow = 'accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture;';
-      iframe.allowFullscreen = true;
-      container.appendChild(iframe);
-      return;
-    }
+      // Reject LIVE feeds (ephemeral HLS belongs in RAM on the RTMP server)
+      if (rawCategory === 'LIVE') {
+        return jsonResponse({
+          error: "The 'LIVE' category is ephemeral and served via RTMP/HLS; it cannot be stored in R2."
+        }, 400);
+      }
 
-    // 2. Direct Video Element for HLS / MP4
-    const video = document.createElement('video');
-    video.className = 'stream-player';
-    video.autoplay = true;
-    video.muted = true;
-    video.playsInline = true;
-    video.controls = true;
-    container.appendChild(video);
+      const validCategories = new Set(['MOTION', 'SNAPSHOTS', 'SNAP']);
+      if (!validCategories.has(rawCategory)) {
+        return jsonResponse({
+          error: `Invalid category '${rawCategory}'. Accepted storage categories: MOTION, SNAPSHOTS, SNAP.`
+        }, 400);
+      }
 
-    // If HLS (.m3u8), initialize HLS.js
-    if (url.includes('.m3u8')) {
-      if (Hls.isSupported()) {
-        const hls = new Hls({ lowLatencyMode: true, backBufferLength: 30 });
-        hls.loadSource(url);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.ERROR, () => {
-          video.poster = '';
+      const normalizedCategory = rawCategory === 'SNAP' ? 'SNAPSHOTS' : rawCategory;
+      const r2Key = `${locationCode}/${normalizedCategory}/${camName}/${fileName}`;
+
+      const ext = fileName.split('.').pop()?.toLowerCase();
+      const contentTypeMap = {
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        webp: 'image/webp',
+        mp4: 'video/mp4',
+        mkv: 'video/x-matroska'
+      };
+
+      try {
+        await env.MEDIA_BUCKET.put(r2Key, request.body, {
+          httpMetadata: { contentType: contentTypeMap[ext] || 'application/octet-stream' },
+          customMetadata: {
+            uploadedAt: new Date().toISOString(),
+            locationCode,
+            category: normalizedCategory,
+            camName
+          }
         });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native Safari/iOS HLS
-        video.src = url;
+
+        return jsonResponse({ status: 'success', key: r2Key }, 201);
+      } catch (err) {
+        console.error('R2 upload error:', err);
+        return jsonResponse({ error: 'Failed to write to R2', details: err.message }, 500);
       }
-    } else {
-      // Standard MP4 or direct video stream
-      video.src = url;
     }
+
+    // 3. Latest Camera Snapshot from R2
+    if (url.pathname === '/api/snapshot/latest' && request.method === 'GET') {
+      const loc = (url.searchParams.get('location') || '').toUpperCase().trim();
+      const cam = (url.searchParams.get('cam') || '').toUpperCase().trim();
+
+      if (!loc || !cam) {
+        return jsonResponse({ error: 'location and cam query parameters are required' }, 400);
+      }
+
+      if (!env.MEDIA_BUCKET) {
+        return jsonResponse({ error: "R2 binding 'MEDIA_BUCKET' is not configured on gateway" }, 500);
+      }
+
+      try {
+        // Search across common category naming variations
+        const prefixes = [
+          `${loc}/SNAPSHOTS/${cam}/`,
+          `${loc}/snapshots/${cam}/`,
+          `${loc}/SNAP/${cam}/`,
+          `${loc}/snap/${cam}/`
+        ];
+
+        let matchedObjects = [];
+        for (const prefix of prefixes) {
+          const listed = await env.MEDIA_BUCKET.list({ prefix, limit: 30 });
+          if (listed.objects && listed.objects.length > 0) {
+            matchedObjects.push(...listed.objects);
+          }
+        }
+
+        // Return clean placeholder SVG if no snapshot uploaded yet
+        if (matchedObjects.length === 0) {
+          const placeholderSvg = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+              <rect width="100%" height="100%" fill="#0a0e17"/>
+              <circle cx="320" cy="140" r="32" fill="#151d2e"/>
+              <path d="M308 132h24v16h-24zM314 126h12v4h-12z" fill="#38bdf8"/>
+              <text x="50%" y="200" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" text-anchor="middle" font-weight="600">Awaiting Camera Snapshot</text>
+              <text x="50%" y="225" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" text-anchor="middle">${escapeHtml(loc)} / ${escapeHtml(cam)}</text>
+            </svg>
+          `.trim();
+
+          return new Response(placeholderSvg, {
+            status: 200,
+            headers: {
+              'Content-Type': 'image/svg+xml',
+              'Cache-Control': 'no-cache, no-store, must-revalidate',
+              ...corsHeaders()
+            }
+          });
+        }
+
+        // Sort descending by upload time to pull the latest image
+        const latestMeta = matchedObjects.sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded))[0];
+        const snapshotObject = await env.MEDIA_BUCKET.get(latestMeta.key);
+
+        if (!snapshotObject) {
+          return jsonResponse({ error: 'Snapshot object could not be retrieved' }, 404);
+        }
+
+        return new Response(snapshotObject.body, {
+          status: 200,
+          headers: {
+            'Content-Type': snapshotObject.httpMetadata?.contentType || 'image/jpeg',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'X-Snapshot-Time': latestMeta.uploaded.toISOString(),
+            ...corsHeaders()
+          }
+        });
+      } catch (err) {
+        console.error('R2 retrieval error (/api/snapshot/latest):', err);
+        return jsonResponse({
+          error: 'Failed to retrieve snapshot from storage',
+          details: err?.message || String(err)
+        }, 500);
+      }
+    }
+
+    // 4. User Authentication & Registration via RPC
+    if (url.pathname === '/api/login' && request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      }
+
+      try {
+        const result = await env.DB.authenticateOrRegisterUser(
+          body.locationId,
+          body.username,
+          body.password
+        );
+
+        if (result.success) {
+          return jsonResponse({
+            status: 'success',
+            isNewUser: result.isNewUser,
+            user: result.user
+          }, 200);
+        }
+
+        return jsonResponse({ error: result.error }, result.status || 401);
+      } catch (err) {
+        console.error('Database RPC error (/api/login):', err);
+        return jsonResponse({
+          error: 'Database service unavailable',
+          details: err?.message || String(err)
+        }, 502);
+      }
+    }
+
+    // 5. Admin: Read All Database Tables
+    if (url.pathname === '/api/admin/tables' && request.method === 'GET') {
+      const adminUserId = request.headers.get('x-admin-userid');
+
+      try {
+        const result = await env.DB.adminGetAllTables(adminUserId);
+        return jsonResponse(result, result.status || (result.success ? 200 : 403));
+      } catch (err) {
+        console.error('Database RPC error (/api/admin/tables):', err);
+        return jsonResponse({
+          error: 'Database service unavailable',
+          details: err?.message || String(err)
+        }, 502);
+      }
+    }
+
+    // 6. Admin: Save / Update Records
+    if (url.pathname === '/api/admin/tables/save' && request.method === 'POST') {
+      const adminUserId = request.headers.get('x-admin-userid');
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      }
+
+      try {
+        const result = await env.DB.adminSaveRecord(
+          adminUserId,
+          body.table,
+          body.data,
+          !!body.isUpdate
+        );
+        return jsonResponse(result, result.status || (result.success ? 200 : 400));
+      } catch (err) {
+        console.error('Database RPC error (/api/admin/tables/save):', err);
+        return jsonResponse({
+          error: 'Database service unavailable',
+          details: err?.message || String(err)
+        }, 502);
+      }
+    }
+
+    // 7. Landing Page Waitlist
+    if (url.pathname === '/api/waitlist' && request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      }
+
+      const email = (body?.email ?? '').trim().toLowerCase();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return jsonResponse({ error: 'A valid email address is required' }, 400);
+      }
+
+      if (env.WAITLIST_KV) {
+        try {
+          await env.WAITLIST_KV.put(
+            `waitlist:${email}:${Date.now()}`,
+            JSON.stringify({ email, submittedAt: new Date().toISOString() })
+          );
+        } catch (err) {
+          console.error('Waitlist KV write error:', err);
+        }
+      }
+
+      return jsonResponse({ message: "You're on the list!", email }, 200);
+    }
+
+    // 8. Health Check
+    if (url.pathname === '/api/health') {
+      return jsonResponse({
+        status: 'ok',
+        service: 'aisys-gateway',
+        timestamp: Date.now()
+      }, 200);
+    }
+
+    return new Response('Not Found', {
+      status: 404,
+      headers: corsHeaders()
+    });
   }
-});
+};
+
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-admin-userid, x-media-token'
+  };
+}
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      ...corsHeaders()
+    }
+  });
+}
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
