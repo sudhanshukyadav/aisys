@@ -81,10 +81,10 @@ export default {
 
     // 3. Latest Camera Snapshot from R2
     if (url.pathname === '/api/snapshot/latest' && request.method === 'GET') {
-      const loc = (url.searchParams.get('location') || '').toUpperCase().trim();
-      const cam = (url.searchParams.get('cam') || '').toUpperCase().trim();
+      const rawLoc = (url.searchParams.get('location') || '').trim();
+      const rawCam = (url.searchParams.get('cam') || '').trim();
 
-      if (!loc || !cam) {
+      if (!rawLoc || !rawCam) {
         return jsonResponse({ error: 'location and cam query parameters are required' }, 400);
       }
 
@@ -93,21 +93,40 @@ export default {
       }
 
       try {
+        const locUpper = rawLoc.toUpperCase();
+        const locLower = rawLoc.toLowerCase();
+        const camUpper = rawCam.toUpperCase();
+        const camLower = rawCam.toLowerCase();
+
+        // Search all combinations of casing for location, category, and camera
         const prefixes = [
-          `${loc}/SNAPSHOTS/${cam}/`,
-          `${loc}/snapshots/${cam}/`,
-          `${loc}/SNAP/${cam}/`,
-          `${loc}/snap/${cam}/`
+          // Lowercase cam (matches your current R2 bucket: HQ-AD/snapshots/apcam/)
+          `${locUpper}/snapshots/${camLower}/`,
+          `${locUpper}/SNAPSHOTS/${camLower}/`,
+          `${locUpper}/snap/${camLower}/`,
+          `${locUpper}/SNAP/${camLower}/`,
+          // Uppercase cam
+          `${locUpper}/snapshots/${camUpper}/`,
+          `${locUpper}/SNAPSHOTS/${camUpper}/`,
+          `${locUpper}/snap/${camUpper}/`,
+          `${locUpper}/SNAP/${camUpper}/`,
+          // Full lowercase
+          `${locLower}/snapshots/${camLower}/`
         ];
 
         let matchedObjects = [];
         for (const prefix of prefixes) {
           const listed = await env.MEDIA_BUCKET.list({ prefix, limit: 30 });
           if (listed.objects && listed.objects.length > 0) {
-            matchedObjects.push(...listed.objects);
+            // Filter out system files like Thumbs.db; keep only image files
+            const validImages = listed.objects.filter(obj => 
+              /\.(jpe?g|png|webp)$/i.test(obj.key)
+            );
+            matchedObjects.push(...validImages);
           }
         }
 
+        // Fallback placeholder SVG if no snapshot images found
         if (matchedObjects.length === 0) {
           const placeholderSvg = `
             <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
@@ -115,7 +134,7 @@ export default {
               <circle cx="320" cy="140" r="32" fill="#151d2e"/>
               <path d="M308 132h24v16h-24zM314 126h12v4h-12z" fill="#38bdf8"/>
               <text x="50%" y="200" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" text-anchor="middle" font-weight="600">Awaiting Camera Snapshot</text>
-              <text x="50%" y="225" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" text-anchor="middle">${escapeHtml(loc)} / ${escapeHtml(cam)}</text>
+              <text x="50%" y="225" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" text-anchor="middle">${escapeHtml(locUpper)} / ${escapeHtml(camUpper)}</text>
             </svg>
           `.trim();
 
@@ -129,6 +148,7 @@ export default {
           });
         }
 
+        // Sort descending by upload time to get the newest snapshot
         const latestMeta = matchedObjects.sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded))[0];
         const snapshotObject = await env.MEDIA_BUCKET.get(latestMeta.key);
 
