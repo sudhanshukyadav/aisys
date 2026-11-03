@@ -56,7 +56,7 @@
     let activeHlsInstances = [];
     let snapshotInterval = null;
 
-    // Default grid sizing
+    // Grid sizing defaults
     if (cameras.length > 4) setGrid(3);
     else if (cameras.length > 1) setGrid(2);
     else setGrid(1);
@@ -64,7 +64,7 @@
     // Initial render
     renderView();
 
-    // Mode Toggle Events
+    // Mode Toggle Handlers
     if (btnModeSnapshots) {
       btnModeSnapshots.addEventListener('click', () => {
         if (currentMode === 'snapshots') return;
@@ -86,7 +86,7 @@
     }
 
     function renderView() {
-      // Cleanup previous video players and polling timers
+      // Teardown running video players & intervals
       activeHlsInstances.forEach(hls => { try { hls.destroy(); } catch {} });
       activeHlsInstances = [];
       if (snapshotInterval) {
@@ -98,6 +98,9 @@
       cameraGrid.innerHTML = '';
 
       cameras.forEach((cam, index) => {
+        // Use camera name for path/query targeting; fallback to camera_id if name is missing
+        const camTarget = (cam.name || cam.camera_id || '').trim();
+
         const tile = document.createElement('div');
         tile.className = 'camera-tile';
         tile.id = `tile-${cam.camera_id}`;
@@ -106,7 +109,7 @@
           <div class="camera-tile-header">
             <div class="cam-header-meta">
               <span class="cam-status-dot ${currentMode === 'snapshots' ? 'snapshot-dot' : ''}"></span>
-              <span class="cam-name">${escapeHtml(cam.name || cam.camera_id)} (${escapeHtml(cam.camera_id)})</span>
+              <span class="cam-name">${escapeHtml(cam.name || cam.camera_id)}</span>
             </div>
             <div style="display:flex; align-items:center; gap:0.5rem;">
               <span class="cam-mode-tag">${currentMode === 'snapshots' ? 'Snapshot' : 'Live'}</span>
@@ -124,20 +127,20 @@
           img.className = 'snapshot-img';
           img.alt = `${cam.name} Snapshot`;
 
-          const targetUrl = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.camera_id)}&_t=${Date.now()}`;
-          console.log(`[AISYS] Requesting snapshot for ${cam.camera_id}: ${targetUrl}`);
+          const targetUrl = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(camTarget)}&_t=${Date.now()}`;
+          console.log(`[AISYS] Requesting snapshot for "${camTarget}": ${targetUrl}`);
           img.src = targetUrl;
 
           img.onload = () => {
-            console.log(`[AISYS] Snapshot loaded successfully for ${cam.camera_id}`);
+            console.log(`[AISYS] Snapshot loaded successfully for "${camTarget}"`);
           };
 
           img.onerror = () => {
-            console.error(`[AISYS] Failed to load snapshot for ${cam.camera_id}`);
+            console.error(`[AISYS] Failed to load snapshot for "${camTarget}"`);
             box.innerHTML = `
               <div class="tile-placeholder-msg">
                 <p>Failed to load snapshot</p>
-                <span>${escapeHtml(user.locationId)} / ${escapeHtml(cam.camera_id)}</span>
+                <span>${escapeHtml(user.locationId)} / ${escapeHtml(camTarget)}</span>
               </div>
             `;
           };
@@ -156,7 +159,7 @@
           video.muted = true;
           box.appendChild(video);
 
-          const streamUrl = `https://stream.aisys.cam/${user.locationId}/live/${cam.camera_id}/index.m3u8`;
+          const streamUrl = `https://stream.aisys.cam/${encodeURIComponent(user.locationId)}/live/${encodeURIComponent(camTarget)}/index.m3u8`;
           mountHlsPlayer(video, streamUrl);
         }
 
@@ -169,13 +172,14 @@
         }
       });
 
-      // Poll snapshots every 5 seconds
+      // Poll snapshots every 5 seconds using camera name
       if (currentMode === 'snapshots') {
         snapshotInterval = setInterval(() => {
           cameras.forEach((cam, index) => {
+            const camTarget = (cam.name || cam.camera_id || '').trim();
             const img = document.querySelector(`#media-box-${index} .snapshot-img`);
             if (img) {
-              img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.camera_id)}&_t=${Date.now()}`;
+              img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(camTarget)}&_t=${Date.now()}`;
             }
           });
         }, 5000);
