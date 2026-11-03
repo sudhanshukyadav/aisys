@@ -2,7 +2,7 @@
   function initLive() {
     const sessionRaw = sessionStorage.getItem('aisys_session');
     if (!sessionRaw) {
-      console.warn('[AISYS] No session found. Redirecting to login...');
+      console.warn('[AISYS] No session found. Redirecting to portal...');
       window.location.href = '/';
       return;
     }
@@ -11,7 +11,7 @@
     try {
       user = JSON.parse(sessionRaw);
     } catch (e) {
-      console.error('[AISYS] Corrupted session JSON:', e);
+      console.error('[AISYS] Session parsing error:', e);
       sessionStorage.removeItem('aisys_session');
       window.location.href = '/';
       return;
@@ -24,7 +24,6 @@
     const btnModeSnapshots = document.getElementById('btnModeSnapshots');
     const btnModeLive = document.getElementById('btnModeLive');
 
-    // Update Header Info
     if (locationBadge) {
       locationBadge.textContent = `${user.locationId || 'LOC'} — ${user.location?.description || 'Active Facility'}`;
     }
@@ -52,11 +51,12 @@
       return;
     }
 
+    // Default mode: snapshots
     let currentMode = 'snapshots';
     let activeHlsInstances = [];
     let snapshotInterval = null;
 
-    // Set default grid columns
+    // Default grid sizing
     if (cameras.length > 4) setGrid(3);
     else if (cameras.length > 1) setGrid(2);
     else setGrid(1);
@@ -64,6 +64,7 @@
     // Initial render
     renderView();
 
+    // Mode Toggle Events
     if (btnModeSnapshots) {
       btnModeSnapshots.addEventListener('click', () => {
         if (currentMode === 'snapshots') return;
@@ -85,7 +86,7 @@
     }
 
     function renderView() {
-      // Clean up previous video instances and intervals
+      // Cleanup previous video players and polling timers
       activeHlsInstances.forEach(hls => { try { hls.destroy(); } catch {} });
       activeHlsInstances = [];
       if (snapshotInterval) {
@@ -103,28 +104,50 @@
 
         tile.innerHTML = `
           <div class="camera-tile-header">
-            <span class="cam-status-dot ${currentMode === 'snapshots' ? 'snapshot-dot' : ''}"></span>
-            <span class="cam-name">${escapeHtml(cam.name || cam.camera_id)} (${escapeHtml(cam.camera_id)})</span>
-            <span class="cam-mode-tag">${currentMode === 'snapshots' ? 'Snapshot' : 'Live'}</span>
-            <button type="button" class="fullscreen-tile-btn" title="Toggle Fullscreen">⛶</button>
+            <div class="cam-header-meta">
+              <span class="cam-status-dot ${currentMode === 'snapshots' ? 'snapshot-dot' : ''}"></span>
+              <span class="cam-name">${escapeHtml(cam.name || cam.camera_id)} (${escapeHtml(cam.camera_id)})</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+              <span class="cam-mode-tag">${currentMode === 'snapshots' ? 'Snapshot' : 'Live'}</span>
+              <button type="button" class="fullscreen-tile-btn" title="Fullscreen">⛶</button>
+            </div>
           </div>
           <div class="video-container" id="media-box-${index}"></div>
         `;
 
         cameraGrid.appendChild(tile);
-
         const box = tile.querySelector(`#media-box-${index}`);
 
         if (currentMode === 'snapshots') {
           const img = document.createElement('img');
           img.className = 'snapshot-img';
           img.alt = `${cam.name} Snapshot`;
-          img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.camera_id)}&_t=${Date.now()}`;
+
+          const targetUrl = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.camera_id)}&_t=${Date.now()}`;
+          console.log(`[AISYS] Requesting snapshot for ${cam.camera_id}: ${targetUrl}`);
+          img.src = targetUrl;
+
+          img.onload = () => {
+            console.log(`[AISYS] Snapshot loaded successfully for ${cam.camera_id}`);
+          };
+
+          img.onerror = () => {
+            console.error(`[AISYS] Failed to load snapshot for ${cam.camera_id}`);
+            box.innerHTML = `
+              <div class="tile-placeholder-msg">
+                <p>Failed to load snapshot</p>
+                <span>${escapeHtml(user.locationId)} / ${escapeHtml(cam.camera_id)}</span>
+              </div>
+            `;
+          };
+
           img.style.cursor = 'pointer';
           img.title = 'Click to switch to live feed';
           img.addEventListener('click', () => {
             if (btnModeLive) btnModeLive.click();
           });
+
           box.appendChild(img);
         } else {
           const video = document.createElement('video');
@@ -198,7 +221,6 @@
       .replace(/"/g, '&quot;');
   }
 
-  // Ensure execution regardless of script load timing
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initLive);
   } else {
