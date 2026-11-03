@@ -1,5 +1,6 @@
 /* ============================================================
-   AISYS PLATFORM STYLESHEET
+   AISYS UNIFIED PLATFORM STYLESHEET
+   Landing Page + Security Modals + Admin Explorer + Live Dashboard
    ============================================================ */
 
 *, *::before, *::after {
@@ -12,35 +13,377 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   background-color: #06090e;
   color: #f1f5f9;
-  line-height: 1.5;
+  line-height: 1.6;
   min-height: 100vh;
 }
 
-/* --- Navigation & Header --- */
+/* --- 1. GLOBAL NAVIGATION & HEADERS --- */
+
 .site-header, .live-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1.5rem;
-  background: #0d121d;
+  padding: 1rem 2rem;
+  background: rgba(13, 18, 29, 0.9);
+  backdrop-filter: blur(12px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   position: sticky;
   top: 0;
   z-index: 50;
-  gap: 1rem;
+  gap: 1.5rem;
 }
 
 .brand-logo {
-  font-size: 1.25rem;
+  font-size: 1.35rem;
   font-weight: 800;
   color: #ffffff;
   text-decoration: none;
   letter-spacing: -0.03em;
+  display: flex;
+  align-items: center;
 }
 
 .brand-logo span {
   color: #38bdf8;
 }
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.nav-link {
+  color: #94a3b8;
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+
+.nav-link:hover {
+  color: #38bdf8;
+}
+
+.nav-btn-primary {
+  background: #0284c7;
+  color: #ffffff;
+  border: none;
+  padding: 0.5rem 1.1rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-decoration: none;
+}
+
+.nav-btn-primary:hover {
+  background: #0369a1;
+  box-shadow: 0 0 12px rgba(2, 132, 199, 0.5);
+}
+
+.nav-btn-secondary {
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.45rem 1rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.nav-btn-secondary:hover {
+  background: #334155;
+  color: #ffffff;
+}
+
+/* --- 2. LANDING PAGE HERO & FEATURES --- */
+
+.hero-section {
+  max-width: 1000px;
+  margin: 4rem auto 3rem;
+  padding: 0 1.5rem;
+  text-align: center;
+}
+
+.hero-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 0.3rem 0.8rem;
+  border-radius: 9999px;
+  margin-bottom: 1.25rem;
+}
+
+.hero-title {
+  font-size: 3rem;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+  color: #ffffff;
+  margin-bottom: 1.25rem;
+}
+
+.hero-desc {
+  font-size: 1.15rem;
+  color: #94a3b8;
+  max-width: 760px;
+  margin: 0 auto 2.5rem;
+}
+
+/* Waitlist Form */
+.waitlist-form {
+  display: flex;
+  max-width: 480px;
+  margin: 0 auto;
+  gap: 0.5rem;
+}
+
+.waitlist-form input[type="email"],
+.waitlist-form input[type="text"] {
+  flex: 1;
+  background: #0f1523;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 0.95rem;
+  outline: none;
+}
+
+.waitlist-form input:focus {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.waitlist-msg {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  min-height: 1.2rem;
+}
+
+/* Features Grid */
+.features-section {
+  max-width: 1100px;
+  margin: 4rem auto;
+  padding: 0 1.5rem;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.feature-card {
+  background: #0d121e;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 2rem;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.feature-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.feature-card h3 {
+  font-size: 1.2rem;
+  color: #f8fafc;
+  margin-bottom: 0.75rem;
+}
+
+.feature-card p {
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+/* --- 3. MODALS (SECURITY PORTAL & ADMIN EXPLORER) --- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 1.5rem;
+}
+
+.modal-overlay.open {
+  display: flex;
+}
+
+.modal-box {
+  background: #0f1523;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  padding: 2rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+  position: relative;
+}
+
+.modal-box.modal-large {
+  max-width: 900px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-close {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.modal-close:hover {
+  color: #ffffff;
+}
+
+.modal-box h2 {
+  font-size: 1.35rem;
+  color: #ffffff;
+  margin-bottom: 0.25rem;
+}
+
+.modal-subtitle {
+  color: #64748b;
+  font-size: 0.85rem;
+  margin-bottom: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1.1rem;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 0.35rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.form-group input, .form-group select {
+  width: 100%;
+  background: #161e30;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.65rem 0.85rem;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.form-group input:focus {
+  border-color: #38bdf8;
+}
+
+.btn-full {
+  width: 100%;
+  padding: 0.75rem;
+  font-size: 0.95rem;
+  margin-top: 0.5rem;
+}
+
+.form-error {
+  color: #f87171;
+  font-size: 0.85rem;
+  margin-top: 0.75rem;
+  text-align: center;
+}
+
+/* Admin Tabs & Drawer */
+.admin-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 0.5rem;
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 0.4rem 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.tab-btn.active {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+}
+
+.table-wrapper {
+  overflow-y: auto;
+  flex: 1;
+  margin-bottom: 1rem;
+}
+
+table.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+table.admin-table th, table.admin-table td {
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+table.admin-table th {
+  background: #161e30;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+.table-edit-btn {
+  background: #1e293b;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #38bdf8;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.admin-drawer {
+  background: #131a29;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+
+.admin-drawer.hidden {
+  display: none;
+}
+
+/* --- 4. LIVE DASHBOARD --- */
 
 .live-header-left, .live-header-right {
   display: flex;
@@ -67,7 +410,6 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* --- View Mode Selector (Snapshots vs Live) --- */
 .view-mode-toggle {
   display: flex;
   background: #151d2c;
@@ -94,7 +436,6 @@ body {
   color: #ffffff;
 }
 
-/* --- Grid Size Controls --- */
 .grid-controls {
   display: flex;
   background: #151d2c;
@@ -120,25 +461,6 @@ body {
   color: #f1f5f9;
 }
 
-/* --- Buttons --- */
-.nav-btn-secondary {
-  background: #1e293b;
-  color: #cbd5e1;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 0.4rem 0.85rem;
-  border-radius: 6px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.nav-btn-secondary:hover {
-  background: #334155;
-  color: #ffffff;
-}
-
-/* --- Viewport & Grid Layout --- */
 .live-viewport {
   padding: 1.25rem;
   max-width: 1920px;
@@ -165,7 +487,6 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 }
 
-/* --- Camera Card Tile --- */
 .camera-tile {
   background: #0f1523;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -239,7 +560,7 @@ body {
   background: rgba(255, 255, 255, 0.1);
 }
 
-/* --- Video / Snapshot Frame (Explicit Aspect Ratio) --- */
+/* MANDATORY: Aspect Ratio guarantees snapshot image container does not collapse */
 .video-container {
   position: relative;
   width: 100%;
@@ -267,7 +588,6 @@ body {
   background: #000000;
 }
 
-/* Fallback & Loading Screens inside Tiles */
 .tile-placeholder-msg {
   display: flex;
   flex-direction: column;
@@ -280,12 +600,6 @@ body {
   padding: 1rem;
 }
 
-.tile-placeholder-msg span {
-  font-size: 0.75rem;
-  color: #475569;
-}
-
-/* No Cams Alert */
 .no-cams-alert {
   background: #111827;
   border: 1px solid rgba(239, 68, 68, 0.2);
