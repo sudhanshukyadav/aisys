@@ -99,17 +99,17 @@
 
       cameras.forEach((cam, index) => {
         // Use camera name for path/query targeting; fallback to camera_id if name is missing
-        const camTarget = (cam.name || cam.camera || '').trim();
+        const camTarget = (cam.name || cam.name || '').trim();
 
         const tile = document.createElement('div');
         tile.className = 'camera-tile';
-        tile.id = `tile-${cam.camera}`;
+        tile.id = `tile-${cam.name}`;
 
         tile.innerHTML = `
           <div class="camera-tile-header">
             <div class="cam-header-meta">
               <span class="cam-status-dot ${currentMode === 'snapshots' ? 'snapshot-dot' : ''}"></span>
-              <span class="cam-name">${escapeHtml(cam.name || cam.camera)}</span>
+              <span class="cam-name">${escapeHtml(cam.name || cam.name)}</span>
             </div>
             <div style="display:flex; align-items:center; gap:0.5rem;">
               <span class="cam-mode-tag">${currentMode === 'snapshots' ? 'Snapshot' : 'Live'}</span>
@@ -176,7 +176,7 @@
       if (currentMode === 'snapshots') {
         snapshotInterval = setInterval(() => {
           cameras.forEach((cam, index) => {
-            const camTarget = (cam.name || cam.camera || '').trim();
+            const camTarget = (cam.name || cam.name || '').trim();
             const img = document.querySelector(`#media-box-${index} .snapshot-img`);
             if (img) {
               img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(camTarget)}&_t=${Date.now()}`;
