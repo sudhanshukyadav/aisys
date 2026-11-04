@@ -133,7 +133,7 @@
           video.muted = true;
           box.appendChild(video);
 
-          const streamUrl = `https://stream.aisys.cam/${user.locationId}/live/${cam.camera_id}/index.m3u8`;
+          const streamUrl = `https://stream.aisys.cam/${user.locationId}/live/${cam.name}/index.m3u8`;
           mountHlsPlayer(video, streamUrl);
         }
 
