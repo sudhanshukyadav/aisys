@@ -44,19 +44,19 @@ export default {
 
         const actualLocId = user.location_id;
 
-        // Fetch location description
+        // Facility details
         const locationMeta = await env.DB.prepare(
           `SELECT location_id, description, address FROM locations WHERE location_id = ?`
         ).bind(actualLocId).first() || { location_id: actualLocId, description: 'Active Facility' };
 
-        // Fetch cameras for this facility
+        // Facility cameras
         const cameraRecords = await env.DB.prepare(
           `SELECT camera_id, location_id, name FROM cameras WHERE location_id = ? ORDER BY camera_id ASC`
         ).bind(actualLocId).all();
 
         const allCameras = cameraRecords.results || [];
 
-        // Parse permissions
+        // Camera permissions
         let allowedCameras = ['*'];
         try {
           allowedCameras = JSON.parse(user.allowed_cameras || '["*"]');
@@ -73,7 +73,6 @@ export default {
           );
         }
 
-        // Return the exact structure expected by public/live.js
         return jsonResponse({
           success: true,
           token: `session_${user.user_id}_${Date.now()}`,
@@ -89,7 +88,7 @@ export default {
       }
 
       // ------------------------------------------------------------
-      // 2. LATEST SNAPSHOT SYNCHRONIZATION (/api/snapshot/latest)
+      // 2. UNIFIED SNAPSHOT RETRIEVAL (/api/snapshot/latest)
       // ------------------------------------------------------------
       if (pathname === '/api/snapshot/latest' && request.method === 'GET') {
         const rawLoc = (url.searchParams.get('location') || '').trim();
@@ -100,68 +99,45 @@ export default {
         }
 
         const locUpper = rawLoc.toUpperCase();
-        const locLower = rawLoc.toLowerCase();
-        const locVariants = [locUpper, locLower];
-        if (locUpper.includes('-')) {
-          const flipped = locUpper.split('-').reverse().join('-');
-          locVariants.push(flipped, flipped.toLowerCase());
-        }
-
-        // Target camera names & identifiers
         const camTargets = new Set([rawCam, rawCam.toLowerCase(), rawCam.toUpperCase()]);
 
-        // Resolve ID <-> name in D1 so either works seamlessly
+        // Resolve camera name <-> ID in D1
         if (env.DB) {
           try {
             const camRow = await env.DB.prepare(
               `SELECT camera_id, name FROM cameras 
                WHERE (camera_id = ? OR LOWER(name) = LOWER(?))
-                 AND (UPPER(location_id) = ? OR UPPER(location_id) = ?)
+                 AND UPPER(location_id) = ? 
                LIMIT 1`
-            ).bind(rawCam, rawCam, locUpper, locVariants[2] || locUpper).first();
+            ).bind(rawCam, rawCam, locUpper).first();
 
             if (camRow) {
-              if (camRow.name) {
-                camTargets.add(camRow.name);
-                camTargets.add(camRow.name.toLowerCase());
-                camTargets.add(camRow.name.toUpperCase());
-              }
-              if (camRow.camera_id) {
-                camTargets.add(String(camRow.camera_id));
-              }
+              if (camRow.name) camTargets.add(camRow.name);
+              if (camRow.camera_id) camTargets.add(String(camRow.camera_id));
             }
           } catch (e) {
-            // Proceed to direct R2 scan if D1 is temporarily unreachable
+            // Continue to R2 scan even if D1 is temporarily busy
           }
         }
 
-        // Build folder search paths in R2
-        const prefixes = [];
-        for (const loc of locVariants) {
-          for (const target of camTargets) {
-            prefixes.push(
-              `${loc}/snapshots/${target}/`,
-              `${loc}/SNAPSHOTS/${target}/`,
-              `${loc}/snap/${target}/`
-            );
-          }
-        }
-
+        // Search both folder and flat-file conventions under HQ-AD/snapshots/
         let candidates = [];
-        for (const prefix of prefixes) {
-          const list = await env.MEDIA_BUCKET.list({ prefix, limit: 50 });
+        for (const target of camTargets) {
+          const prefix = `${locUpper}/snapshots/${target}`;
+          const list = await env.MEDIA_BUCKET.list({ prefix, limit: 100 });
+
           if (list.objects && list.objects.length > 0) {
-            const images = list.objects.filter(obj =>
-              /\.(jpe?g|png|webp)$/i.test(obj.key)
-            );
-            if (images.length > 0) {
-              candidates.push(...images);
-              break;
-            }
+            const matches = list.objects.filter(obj => {
+              if (!/\.(jpe?g|png|webp)$/i.test(obj.key)) return false;
+              // Matches: snapshots/apcam/..., snapshots/apcam.jpg, snapshots/apcam_*.jpg
+              const regex = new RegExp(`[/_.-]|^${target}`, 'i');
+              return regex.test(obj.key);
+            });
+            candidates.push(...matches);
           }
         }
 
-        // Return a 200 OK SVG placeholder if no snapshot exists yet (prevents 404 in console)
+        // Return a clean 200 SVG placeholder if no snapshot exists yet
         if (candidates.length === 0) {
           return new Response(generatePlaceholderSvg(locUpper, rawCam), {
             status: 200,
@@ -173,18 +149,17 @@ export default {
           });
         }
 
-        // Sort by uploaded timestamp descending -> pick the newest available image
+        // Sort by upload timestamp descending (newest first)
         candidates.sort((a, b) => new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime());
-        const latestKey = candidates[0].key;
+        const newestKey = candidates[0].key;
 
-        const object = await env.MEDIA_BUCKET.get(latestKey);
+        const object = await env.MEDIA_BUCKET.get(newestKey);
         if (!object) {
-          return jsonResponse({ error: 'Image object not found' }, 404);
+          return jsonResponse({ error: 'Snapshot object missing from storage' }, 404);
         }
 
         const headers = new Headers();
         headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
-        // Prevent browser/CDN stale caching so the 5s polling loop always displays the new frame
         headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
         headers.set('ETag', object.httpEtag);
         headers.set('Access-Control-Allow-Origin', '*');
@@ -197,8 +172,6 @@ export default {
       // ------------------------------------------------------------
       if (env.ASSETS) {
         let response = await env.ASSETS.fetch(request);
-        
-        // Auto-resolve /live -> /live.html and /login -> /login.html
         if (response.status === 404 && !pathname.includes('.')) {
           const htmlUrl = new URL(request.url);
           htmlUrl.pathname = `${pathname}.html`;
@@ -219,12 +192,12 @@ export default {
 };
 
 // ------------------------------------------------------------
-// HELPER FUNCTIONS
+// HELPERS
 // ------------------------------------------------------------
 
 async function verifyPassword(inputPassword, storedHash) {
   if (!inputPassword || !storedHash) return false;
-  if (storedHash === inputPassword) return true; // Plaintext fallback support
+  if (storedHash === inputPassword) return true;
 
   const encoder = new TextEncoder();
   const data = encoder.encode(inputPassword);
