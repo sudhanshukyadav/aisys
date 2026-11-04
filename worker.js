@@ -55,7 +55,7 @@ export default {
           `SELECT location_id, description, address FROM locations WHERE location_id = ?`
         ).bind(actualLocId).first() || { location_id: actualLocId, description: 'Facility Active' };
 
-        // Fetch cameras for this facility (schema contains NO stream_url column)
+        // Fetch cameras for this facility
         const cameraRecords = await env.DB.prepare(
           `SELECT camera_id, location_id, name FROM cameras WHERE location_id = ?`
         ).bind(actualLocId).all();
@@ -74,7 +74,7 @@ export default {
         if (!allowedCameras.includes('*') && user.role !== 'admin') {
           const allowedLower = allowedCameras.map(a => String(a).toLowerCase());
           authorizedCameras = allCameras.filter(cam =>
-            allowedLower.includes(cam.camera_id.toLowerCase()) ||
+            allowedLower.includes(String(cam.camera_id).toLowerCase()) ||
             allowedLower.includes((cam.name || '').toLowerCase())
           );
         }
@@ -105,8 +105,6 @@ export default {
 
         const locUpper = rawLoc.toUpperCase();
         const locLower = rawLoc.toLowerCase();
-        const camUpper = rawCam.toUpperCase();
-        const camLower = rawCam.toLowerCase();
 
         // Support inverted location codes (HQ-AD <-> AD-HQ)
         const locVariants = [locUpper, locLower];
@@ -115,18 +113,41 @@ export default {
           locVariants.push(flipped, flipped.toLowerCase());
         }
 
-        // Query variants for R2 folder structures
+        // Collect all possible aliases for camera name and camera id
+        const camTargets = new Set([rawCam, rawCam.toLowerCase(), rawCam.toUpperCase()]);
+
+        // Resolve camera_id to camera name from D1 if available
+        if (env.DB) {
+          const camRow = await env.DB.prepare(
+            `SELECT camera_id, name FROM cameras 
+             WHERE (camera_id = ? OR LOWER(name) = LOWER(?))
+               AND (UPPER(location_id) = ? OR UPPER(location_id) = ?)
+             LIMIT 1`
+          ).bind(rawCam, rawCam, locUpper, locVariants[2] || locUpper).first();
+
+          if (camRow) {
+            if (camRow.name) {
+              camTargets.add(camRow.name);
+              camTargets.add(camRow.name.toLowerCase());
+              camTargets.add(camRow.name.toUpperCase());
+            }
+            if (camRow.camera_id) {
+              camTargets.add(String(camRow.camera_id));
+              camTargets.add(String(camRow.camera_id).toLowerCase());
+            }
+          }
+        }
+
+        // Build folder search paths in R2 across all location and camera variants
         const prefixes = [];
         for (const loc of locVariants) {
-          prefixes.push(
-            `${loc}/snapshots/${camLower}/`,
-            `${loc}/snapshots/${camUpper}/`,
-            `${loc}/snapshots/${rawCam}/`,
-            `${loc}/SNAPSHOTS/${camLower}/`,
-            `${loc}/SNAPSHOTS/${camUpper}/`,
-            `${loc}/snap/${camLower}/`,
-            `${loc}/snap/${camUpper}/`
-          );
+          for (const target of camTargets) {
+            prefixes.push(
+              `${loc}/snapshots/${target}/`,
+              `${loc}/SNAPSHOTS/${target}/`,
+              `${loc}/snap/${target}/`
+            );
+          }
         }
 
         let candidates = [];
@@ -136,8 +157,10 @@ export default {
             const imageObjects = list.objects.filter(obj =>
               /\.(jpe?g|png|webp)$/i.test(obj.key)
             );
-            candidates.push(...imageObjects);
-            if (candidates.length > 0) break; // Found matches in current prefix
+            if (imageObjects.length > 0) {
+              candidates.push(...imageObjects);
+              break; // Found matching folder
+            }
           }
         }
 
@@ -210,7 +233,7 @@ export default {
           return jsonResponse({ error: 'Malformed update payload.' }, 400);
         }
 
-        // Exclude illegal columns
+        // Exclude immutable columns
         const keys = Object.keys(updates).filter(k => k !== 'created_at');
         if (keys.length === 0) {
           return jsonResponse({ error: 'No fields to update.' }, 400);
@@ -248,7 +271,7 @@ export default {
 
 async function verifyPassword(inputPassword, storedHash) {
   if (!inputPassword || !storedHash) return false;
-  
+
   // 1. Plaintext direct match
   if (storedHash === inputPassword) return true;
 
