@@ -152,7 +152,7 @@
           cameras.forEach((cam, index) => {
             const img = document.querySelector(`#media-box-${index} .snapshot-img`);
             if (img) {
-              img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.camera_id)}&_t=${Date.now()}`;
+              img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.name)}&_t=${Date.now()}`;
             }
           });
         }, 5000);
