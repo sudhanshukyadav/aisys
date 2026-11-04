@@ -1,292 +1,207 @@
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const pathname = url.pathname;
-
-    if (request.method === 'OPTIONS') {
-      return handleCors();
+(function () {
+  function initLive() {
+    const sessionRaw = sessionStorage.getItem('aisys_session');
+    if (!sessionRaw) {
+      console.warn('[AISYS] No session found. Redirecting to login...');
+      window.location.href = '/';
+      return;
     }
 
+    let user;
     try {
-      // ------------------------------------------------------------
-      // 1. AUTHENTICATION & LOGIN
-      // ------------------------------------------------------------
-      if ((pathname === '/api/auth/login' || pathname === '/api/login') && request.method === 'POST') {
-        const body = await request.json().catch(() => ({}));
-        const rawLoc = (body.locationId || body.locationCode || body.location || '').trim();
-        const username = (body.username || body.operator || body.user || '').trim();
-        const password = String(body.password || '').trim();
+      user = JSON.parse(sessionRaw);
+    } catch (e) {
+      console.error('[AISYS] Corrupted session JSON:', e);
+      sessionStorage.removeItem('aisys_session');
+      window.location.href = '/';
+      return;
+    }
 
-        if (!rawLoc || !username || !password) {
-          return jsonResponse({ error: 'Location code, username, and password are required.' }, 400);
-        }
+    const locationBadge = document.getElementById('locationBadge');
+    const userPill = document.getElementById('userPill');
+    const cameraGrid = document.getElementById('cameraGrid');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const btnModeSnapshots = document.getElementById('btnModeSnapshots');
+    const btnModeLive = document.getElementById('btnModeLive');
 
-        const locUpper = rawLoc.toUpperCase();
-        const locFlipped = locUpper.includes('-') ? locUpper.split('-').reverse().join('-') : locUpper;
+    // Update Header Info
+    if (locationBadge) {
+      locationBadge.textContent = `${user.locationId || 'LOC'} — ${user.location?.description || 'Active Facility'}`;
+    }
+    if (userPill) {
+      userPill.textContent = `${user.username || 'User'} (${user.role || 'viewer'})`;
+    }
 
-        const user = await env.DB.prepare(
-          `SELECT * FROM users 
-           WHERE (UPPER(location_id) = ? OR UPPER(location_id) = ?) 
-             AND LOWER(username) = LOWER(?) 
-           LIMIT 1`
-        ).bind(locUpper, locFlipped, username).first();
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', () => {
+        sessionStorage.removeItem('aisys_session');
+        window.location.href = '/';
+      });
+    }
 
-        if (!user) {
-          return jsonResponse({ error: 'Invalid location or username.' }, 401);
-        }
+    const cameras = user.cameras || [];
+    if (cameras.length === 0) {
+      if (cameraGrid) {
+        cameraGrid.innerHTML = `
+          <div class="no-cams-alert">
+            <h3>No Authorized Cameras</h3>
+            <p>No video channels have been assigned to your profile for location ${escapeHtml(user.locationId || '')}.</p>
+          </div>
+        `;
+      }
+      return;
+    }
 
-        const isPasswordValid = await verifyPassword(password, user.password_hash);
-        if (!isPasswordValid) {
-          return jsonResponse({ error: 'Incorrect password.' }, 401);
-        }
+    let currentMode = 'snapshots';
+    let activeHlsInstances = [];
+    let snapshotInterval = null;
 
-        const actualLocId = user.location_id;
+    // Set default grid columns
+    if (cameras.length > 4) setGrid(3);
+    else if (cameras.length > 1) setGrid(2);
+    else setGrid(1);
 
-        const locationMeta = await env.DB.prepare(
-          `SELECT location_id, description, address FROM locations WHERE location_id = ?`
-        ).bind(actualLocId).first() || { location_id: actualLocId, description: 'Active Facility' };
+    // Initial render
+    renderView();
 
-        const cameraRecords = await env.DB.prepare(
-          `SELECT camera_id, location_id, name FROM cameras WHERE location_id = ? ORDER BY camera_id ASC`
-        ).bind(actualLocId).all();
+    if (btnModeSnapshots) {
+      btnModeSnapshots.addEventListener('click', () => {
+        if (currentMode === 'snapshots') return;
+        currentMode = 'snapshots';
+        btnModeSnapshots.classList.add('active');
+        if (btnModeLive) btnModeLive.classList.remove('active');
+        renderView();
+      });
+    }
 
-        const allCameras = cameraRecords.results || [];
+    if (btnModeLive) {
+      btnModeLive.addEventListener('click', () => {
+        if (currentMode === 'live') return;
+        currentMode = 'live';
+        btnModeLive.classList.add('active');
+        if (btnModeSnapshots) btnModeSnapshots.classList.remove('active');
+        renderView();
+      });
+    }
 
-        let allowedCameras = ['*'];
-        try {
-          allowedCameras = JSON.parse(user.allowed_cameras || '["*"]');
-        } catch {
-          allowedCameras = ['*'];
-        }
-
-        let authorizedCameras = allCameras;
-        if (!allowedCameras.includes('*') && user.role !== 'admin') {
-          const allowedLower = allowedCameras.map(a => String(a).toLowerCase());
-          authorizedCameras = allCameras.filter(cam =>
-            allowedLower.includes(String(cam.camera_id).toLowerCase()) ||
-            allowedLower.includes((cam.name || '').toLowerCase())
-          );
-        }
-
-        return jsonResponse({
-          success: true,
-          token: `session_${user.user_id}_${Date.now()}`,
-          user: {
-            userId: user.user_id,
-            username: user.username,
-            role: user.role,
-            locationId: actualLocId,
-            location: locationMeta,
-            cameras: authorizedCameras
-          }
-        });
+    function renderView() {
+      // Clean up previous video instances and intervals
+      activeHlsInstances.forEach(hls => { try { hls.destroy(); } catch {} });
+      activeHlsInstances = [];
+      if (snapshotInterval) {
+        clearInterval(snapshotInterval);
+        snapshotInterval = null;
       }
 
-      // ------------------------------------------------------------
-      // 2. RESILIENT SNAPSHOT RETRIEVAL (/api/snapshot/latest)
-      // ------------------------------------------------------------
-      if (pathname === '/api/snapshot/latest' && request.method === 'GET') {
-        const rawLoc = (url.searchParams.get('location') || '').trim();
-        const rawCam = (url.searchParams.get('cam') || url.searchParams.get('camera') || '').trim();
-        const isDebug = url.searchParams.has('debug');
+      if (!cameraGrid) return;
+      cameraGrid.innerHTML = '';
 
-        if (!rawLoc || !rawCam) {
-          return jsonResponse({ error: 'Parameters "location" and "cam" are required.' }, 400);
+      cameras.forEach((cam, index) => {
+        const tile = document.createElement('div');
+        tile.className = 'camera-tile';
+        tile.id = `tile-${cam.camera_id}`;
+
+        tile.innerHTML = `
+          <div class="camera-tile-header">
+            <span class="cam-status-dot ${currentMode === 'snapshots' ? 'snapshot-dot' : ''}"></span>
+            <span class="cam-name">${escapeHtml(cam.name || cam.camera_id)} (${escapeHtml(cam.camera_id)})</span>
+            <span class="cam-mode-tag">${currentMode === 'snapshots' ? 'Snapshot' : 'Live'}</span>
+            <button type="button" class="fullscreen-tile-btn" title="Toggle Fullscreen">⛶</button>
+          </div>
+          <div class="video-container" id="media-box-${index}"></div>
+        `;
+
+        cameraGrid.appendChild(tile);
+
+        const box = tile.querySelector(`#media-box-${index}`);
+
+        if (currentMode === 'snapshots') {
+          const img = document.createElement('img');
+          img.className = 'snapshot-img';
+          img.alt = `${cam.name} Snapshot`;
+          // Requests snapshot using camera name
+          img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.name || cam.camera_id)}&_t=${Date.now()}`;
+          img.style.cursor = 'pointer';
+          img.title = 'Click to switch to live feed';
+          img.addEventListener('click', () => {
+            if (btnModeLive) btnModeLive.click();
+          });
+          box.appendChild(img);
+        } else {
+          const video = document.createElement('video');
+          video.playsInline = true;
+          video.autoplay = true;
+          video.muted = true;
+          box.appendChild(video);
+
+          const streamUrl = `https://stream.aisys.cam/${user.locationId}/live/${cam.name}/index.m3u8`;
+          mountHlsPlayer(video, streamUrl);
         }
 
-        const locUpper = rawLoc.toUpperCase();
-        const camTargets = new Set([rawCam.toLowerCase(), rawCam.toUpperCase(), rawCam]);
-
-        // Resolve D1 aliases (ID <-> Name)
-        let d1CameraInfo = null;
-        if (env.DB) {
-          try {
-            d1CameraInfo = await env.DB.prepare(
-              `SELECT camera_id, name FROM cameras 
-               WHERE (camera_id = ? OR LOWER(name) = LOWER(?))
-                 AND UPPER(location_id) = ? 
-               LIMIT 1`
-            ).bind(rawCam, rawCam, locUpper).first();
-
-            if (d1CameraInfo) {
-              if (d1CameraInfo.name) {
-                camTargets.add(d1CameraInfo.name);
-                camTargets.add(d1CameraInfo.name.toLowerCase());
-              }
-              if (d1CameraInfo.camera_id) {
-                camTargets.add(String(d1CameraInfo.camera_id));
-              }
-            }
-          } catch (e) {
-            // Proceed to direct storage scan if D1 is busy
-          }
-        }
-
-        // Search R2 broadly across case variations
-        const prefixSearches = [
-          `${locUpper}/snapshots/`,
-          `${rawLoc.toLowerCase()}/snapshots/`,
-          `${locUpper}/SNAPSHOTS/`
-        ];
-
-        let allObjects = [];
-        for (const p of prefixSearches) {
-          const list = await env.MEDIA_BUCKET.list({ prefix: p, limit: 150 });
-          if (list.objects && list.objects.length > 0) {
-            allObjects.push(...list.objects);
-          }
-        }
-
-        // Deduplicate keys
-        const uniqueObjects = Array.from(new Map(allObjects.map(obj => [obj.key, obj])).values());
-
-        // Ignore 0-byte corrupted files and non-image extensions
-        const validImages = uniqueObjects.filter(obj => 
-          obj.size > 0 && /\.(jpe?g|png|webp)$/i.test(obj.key)
-        );
-
-        // Case-insensitive match against any camera identifier (name or id)
-        const candidates = validImages.filter(obj => {
-          const keyLower = obj.key.toLowerCase();
-          for (const target of camTargets) {
-            const t = target.toLowerCase();
-            if (
-              keyLower.includes(`/${t}/`) ||
-              keyLower.includes(`/${t}.`) ||
-              keyLower.includes(`/${t}_`) ||
-              keyLower.includes(`/${t}-`) ||
-              keyLower.endsWith(`/${t}`) ||
-              keyLower.includes(`snapshots/${t}`)
-            ) {
-              return true;
-            }
-          }
-          return false;
-        });
-
-        // ------------------------------------------------------------
-        // DIAGNOSTIC DEBUG OUTPUT (?debug=1)
-        // ------------------------------------------------------------
-        if (isDebug) {
-          return jsonResponse({
-            status: 'diagnostic_mode',
-            params: { location: rawLoc, cam: rawCam },
-            d1Resolved: d1CameraInfo,
-            searchedAliases: Array.from(camTargets),
-            totalR2ObjectsFound: uniqueObjects.length,
-            allR2Keys: uniqueObjects.map(o => ({ key: o.key, bytes: o.size, uploaded: o.uploaded })),
-            matchedImageCount: candidates.length,
-            matchedImages: candidates.map(o => ({ key: o.key, bytes: o.size, uploaded: o.uploaded }))
+        const fsBtn = tile.querySelector('.fullscreen-tile-btn');
+        if (fsBtn) {
+          fsBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) tile.requestFullscreen().catch(() => {});
+            else document.exitFullscreen().catch(() => {});
           });
         }
+      });
 
-        // Return SVG placeholder if no files exist
-        if (candidates.length === 0) {
-          return new Response(generatePlaceholderSvg(locUpper, rawCam), {
-            status: 200,
-            headers: {
-              'Content-Type': 'image/svg+xml',
-              'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'X-AISYS-Status': 'placeholder-no-images',
-              'Access-Control-Allow-Origin': '*'
+      // Poll snapshots every 5 seconds
+      if (currentMode === 'snapshots') {
+        snapshotInterval = setInterval(() => {
+          cameras.forEach((cam, index) => {
+            const img = document.querySelector(`#media-box-${index} .snapshot-img`);
+            if (img) {
+              img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.name || cam.camera_id)}&_t=${Date.now()}`;
             }
           });
-        }
-
-        // Sort descending by upload timestamp (newest first)
-        candidates.sort((a, b) => new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime());
-        const latestKey = candidates[0].key;
-
-        const object = await env.MEDIA_BUCKET.get(latestKey);
-        if (!object) {
-          return jsonResponse({ error: 'Object missing from storage' }, 404);
-        }
-
-        const headers = new Headers();
-        headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
-        headers.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-        headers.set('ETag', object.httpEtag);
-        headers.set('X-AISYS-Matched-Key', latestKey);
-        headers.set('Access-Control-Allow-Origin': '*');
-
-        return new Response(object.body, { headers });
+        }, 5000);
       }
+    }
 
-      // ------------------------------------------------------------
-      // 3. STATIC SPA ROUTING
-      // ------------------------------------------------------------
-      if (env.ASSETS) {
-        let response = await env.ASSETS.fetch(request);
-        if (response.status === 404 && !pathname.includes('.')) {
-          const htmlUrl = new URL(request.url);
-          htmlUrl.pathname = `${pathname}.html`;
-          const htmlResponse = await env.ASSETS.fetch(new Request(htmlUrl, request));
-          if (htmlResponse.status === 200) {
-            return htmlResponse;
-          }
-        }
-        return response;
+    function mountHlsPlayer(videoElement, hlsUrl) {
+      if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+        const hls = new Hls({
+          lowLatencyMode: true,
+          backBufferLength: 0,
+          liveSyncDurationCount: 2,
+          liveMaxLatencyDurationCount: 4
+        });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(videoElement);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => videoElement.play().catch(() => {}));
+        activeHlsInstances.push(hls);
+      } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+        videoElement.src = hlsUrl;
+        videoElement.play().catch(() => {});
       }
+    }
 
-      return new Response('AISYS Edge API operational.', { status: 200 });
+    document.querySelectorAll('.grid-btn').forEach(btn => {
+      btn.addEventListener('click', () => setGrid(parseInt(btn.dataset.grid, 10)));
+    });
 
-    } catch (err) {
-      return jsonResponse({ error: err.message || 'Internal Edge Runtime Error' }, 500);
+    function setGrid(columns) {
+      if (!cameraGrid) return;
+      cameraGrid.className = `camera-grid grid-${columns}`;
+      document.querySelectorAll('.grid-btn').forEach(b => {
+        b.classList.toggle('active', parseInt(b.dataset.grid, 10) === columns);
+      });
     }
   }
-};
 
-// ------------------------------------------------------------
-// HELPERS
-// ------------------------------------------------------------
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
 
-async function verifyPassword(inputPassword, storedHash) {
-  if (!inputPassword || !storedHash) return false;
-  if (storedHash === inputPassword) return true;
-
-  const encoder = new TextEncoder();
-  const data = encoder.encode(inputPassword);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  return storedHash.toLowerCase() === hashHex.toLowerCase();
-}
-
-function jsonResponse(data, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-    }
-  });
-}
-
-function handleCors() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Max-Age': '86400'
-    }
-  });
-}
-
-function generatePlaceholderSvg(location, camera) {
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
-    <rect width="100%" height="100%" fill="#0a0f1d"/>
-    <rect x="2" y="2" width="636" height="356" fill="none" stroke="#1e293b" stroke-width="2"/>
-    <circle cx="320" cy="150" r="32" fill="none" stroke="#38bdf8" stroke-width="3" opacity="0.6"/>
-    <circle cx="320" cy="150" r="8" fill="#38bdf8" opacity="0.8"/>
-    <text x="320" y="215" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" font-weight="600" text-anchor="middle">Awaiting Snapshot</text>
-    <text x="320" y="240" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" text-anchor="middle">${location} / ${camera}</text>
-  </svg>
-  `.trim();
-}
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initLive);
+  } else {
+    initLive();
+  }
+})();
