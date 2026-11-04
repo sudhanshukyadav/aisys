@@ -1,289 +1,291 @@
-// ============================================================
-// AISYS EDGE WORKER (aisys/worker.js)
-// Zero-Disk Live HLS, R2 Snapshots, Multi-Tenant Auth, D1 Admin
-// ============================================================
-
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
-    const pathname = url.pathname;
 
-    // Global CORS preflight
+    // 1. CORS Preflight
     if (request.method === 'OPTIONS') {
-      return handleCors();
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders()
+      });
     }
 
-    try {
-      // ------------------------------------------------------------
-      // 1. AUTHENTICATION & LOGIN
-      // ------------------------------------------------------------
-      if ((pathname === '/api/auth/login' || pathname === '/api/login') && request.method === 'POST') {
-        const body = await request.json().catch(() => ({}));
-        const rawLoc = (body.locationId || body.location || '').trim();
-        const username = (body.username || '').trim();
-        const password = String(body.password || '');
-
-        if (!rawLoc || !username || !password) {
-          return jsonResponse({ error: 'Location ID, username, and password are required.' }, 400);
-        }
-
-        const locUpper = rawLoc.toUpperCase();
-        const locFlipped = locUpper.includes('-') ? locUpper.split('-').reverse().join('-') : locUpper;
-
-        // Query user in D1 (case-insensitive for username, supports HQ-AD or AD-HQ)
-        const user = await env.DB.prepare(
-          `SELECT * FROM users 
-           WHERE (UPPER(location_id) = ? OR UPPER(location_id) = ?) 
-             AND LOWER(username) = LOWER(?) 
-           LIMIT 1`
-        ).bind(locUpper, locFlipped, username).first();
-
-        if (!user) {
-          return jsonResponse({ error: 'Invalid location or username.' }, 401);
-        }
-
-        // Verify password (supports both plaintext seeds and SHA-256 hashes)
-        const isPasswordValid = await verifyPassword(password, user.password_hash);
-        if (!isPasswordValid) {
-          return jsonResponse({ error: 'Incorrect password.' }, 401);
-        }
-
-        const actualLocId = user.location_id;
-
-        // Fetch facility metadata
-        const locationMeta = await env.DB.prepare(
-          `SELECT location_id, description, address FROM locations WHERE location_id = ?`
-        ).bind(actualLocId).first() || { location_id: actualLocId, description: 'Facility Active' };
-
-        // Fetch cameras for this facility
-        const cameraRecords = await env.DB.prepare(
-          `SELECT camera_id, location_id, name FROM cameras WHERE location_id = ?`
-        ).bind(actualLocId).all();
-
-        const allCameras = cameraRecords.results || [];
-
-        // Parse user permissions
-        let allowedCameras = ['*'];
-        try {
-          allowedCameras = JSON.parse(user.allowed_cameras || '["*"]');
-        } catch {
-          allowedCameras = ['*'];
-        }
-
-        let authorizedCameras = allCameras;
-        if (!allowedCameras.includes('*') && user.role !== 'admin') {
-          const allowedLower = allowedCameras.map(a => String(a).toLowerCase());
-          authorizedCameras = allCameras.filter(cam =>
-            allowedLower.includes(String(cam.camera_id).toLowerCase()) ||
-            allowedLower.includes((cam.name || '').toLowerCase())
-          );
-        }
-
-        return jsonResponse({
-          success: true,
-          user: {
-            userId: user.user_id,
-            username: user.username,
-            role: user.role,
-            locationId: actualLocId,
-            location: locationMeta,
-            cameras: authorizedCameras
-          }
-        });
+    // 2. Direct Media Upload to R2 (for S: Drive Sync Watcher)
+    // Format: PUT /upload/:location/:category/:cam/:fileName
+    if (url.pathname.startsWith('/upload/') && request.method === 'PUT') {
+      const token = request.headers.get('x-media-token');
+      if (token !== 'aisys-media-secret-key') {
+        return jsonResponse({ error: 'Unauthorized: Invalid media upload token' }, 401);
       }
 
-      // ------------------------------------------------------------
-      // 2. R2 LATEST SNAPSHOT SYNCHRONIZATION
-      // ------------------------------------------------------------
-      if (pathname === '/api/snapshot/latest' && request.method === 'GET') {
-        const rawLoc = (url.searchParams.get('location') || '').trim();
-        const rawCam = (url.searchParams.get('cam') || url.searchParams.get('camera') || '').trim();
+      if (!env.MEDIA_BUCKET) {
+        return jsonResponse({ error: "R2 binding 'MEDIA_BUCKET' not configured" }, 500);
+      }
 
-        if (!rawLoc || !rawCam) {
-          return jsonResponse({ error: 'Parameters "location" and "cam" are required.' }, 400);
-        }
+      const pathSegments = url.pathname.slice('/upload/'.length).split('/');
+      if (pathSegments.length < 4) {
+        return jsonResponse({
+          error: 'Expected path format: /upload/:locationCode/:category/:camName/:fileName'
+        }, 400);
+      }
 
-        const locUpper = rawLoc.toUpperCase();
-        const locLower = rawLoc.toLowerCase();
+      const locationCode = decodeURIComponent(pathSegments[0]).trim().toUpperCase();
+      const rawCategory  = decodeURIComponent(pathSegments[1]).trim().toUpperCase();
+      const camName      = decodeURIComponent(pathSegments[2]).trim().toUpperCase();
+      const fileName     = decodeURIComponent(pathSegments.slice(3).join('/'));
 
-        // Support inverted location codes (HQ-AD <-> AD-HQ)
-        const locVariants = [locUpper, locLower];
-        if (locUpper.includes('-')) {
-          const flipped = locUpper.split('-').reverse().join('-');
-          locVariants.push(flipped, flipped.toLowerCase());
-        }
+      // Reject LIVE feeds (ephemeral HLS belongs in RAM on the RTMP server)
+      if (rawCategory === 'LIVE') {
+        return jsonResponse({
+          error: "The 'LIVE' category is ephemeral and served via RTMP/HLS; it cannot be stored in R2."
+        }, 400);
+      }
 
-        // Collect all possible aliases for camera name and camera id
-        const camTargets = new Set([rawCam, rawCam.toLowerCase(), rawCam.toUpperCase()]);
+      const validCategories = new Set(['MOTION', 'SNAPSHOTS', 'SNAP']);
+      if (!validCategories.has(rawCategory)) {
+        return jsonResponse({
+          error: `Invalid category '${rawCategory}'. Accepted storage categories: MOTION, SNAPSHOTS, SNAP.`
+        }, 400);
+      }
 
-        // Resolve camera_id to camera name from D1 if available
-        if (env.DB) {
-          const camRow = await env.DB.prepare(
-            `SELECT camera_id, name FROM cameras 
-             WHERE (camera_id = ? OR LOWER(name) = LOWER(?))
-               AND (UPPER(location_id) = ? OR UPPER(location_id) = ?)
-             LIMIT 1`
-          ).bind(rawCam, rawCam, locUpper, locVariants[2] || locUpper).first();
+      const normalizedCategory = rawCategory === 'SNAP' ? 'SNAPSHOTS' : rawCategory;
+      const r2Key = `${locationCode}/${normalizedCategory}/${camName}/${fileName}`;
 
-          if (camRow) {
-            if (camRow.name) {
-              camTargets.add(camRow.name);
-              camTargets.add(camRow.name.toLowerCase());
-              camTargets.add(camRow.name.toUpperCase());
-            }
-            if (camRow.camera_id) {
-              camTargets.add(String(camRow.camera_id));
-              camTargets.add(String(camRow.camera_id).toLowerCase());
-            }
+      const ext = fileName.split('.').pop()?.toLowerCase();
+      const contentTypeMap = {
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        webp: 'image/webp',
+        mp4: 'video/mp4',
+        mkv: 'video/x-matroska'
+      };
+
+      try {
+        await env.MEDIA_BUCKET.put(r2Key, request.body, {
+          httpMetadata: { contentType: contentTypeMap[ext] || 'application/octet-stream' },
+          customMetadata: {
+            uploadedAt: new Date().toISOString(),
+            locationCode,
+            category: normalizedCategory,
+            camName
           }
-        }
+        });
 
-        // Build folder search paths in R2 across all location and camera variants
-        const prefixes = [];
-        for (const loc of locVariants) {
-          for (const target of camTargets) {
-            prefixes.push(
-              `${loc}/snapshots/${target}/`,
-              `${loc}/SNAPSHOTS/${target}/`,
-              `${loc}/snap/${target}/`
-            );
-          }
-        }
+        return jsonResponse({ status: 'success', key: r2Key }, 201);
+      } catch (err) {
+        console.error('R2 upload error:', err);
+        return jsonResponse({ error: 'Failed to write to R2', details: err.message }, 500);
+      }
+    }
 
-        let candidates = [];
+    // 3. Latest Camera Snapshot from R2
+    if (url.pathname === '/api/snapshot/latest' && request.method === 'GET') {
+      const loc = (url.searchParams.get('location') || '').toUpperCase().trim();
+      const cam = (url.searchParams.get('cam') || '').toUpperCase().trim();
+
+      if (!loc || !cam) {
+        return jsonResponse({ error: 'location and cam query parameters are required' }, 400);
+      }
+
+      if (!env.MEDIA_BUCKET) {
+        return jsonResponse({ error: "R2 binding 'MEDIA_BUCKET' is not configured on gateway" }, 500);
+      }
+
+      try {
+        const prefixes = [
+          `${loc}/SNAPSHOTS/${cam}/`,
+          `${loc}/snapshots/${cam}/`,
+          `${loc}/SNAP/${cam}/`,
+          `${loc}/snap/${cam}/`
+        ];
+
+        let matchedObjects = [];
         for (const prefix of prefixes) {
-          const list = await env.MEDIA_BUCKET.list({ prefix, limit: 30 });
-          if (list.objects && list.objects.length > 0) {
-            const imageObjects = list.objects.filter(obj =>
-              /\.(jpe?g|png|webp)$/i.test(obj.key)
-            );
-            if (imageObjects.length > 0) {
-              candidates.push(...imageObjects);
-              break; // Found matching folder
-            }
+          const listed = await env.MEDIA_BUCKET.list({ prefix, limit: 30 });
+          if (listed.objects && listed.objects.length > 0) {
+            matchedObjects.push(...listed.objects);
           }
         }
 
-        if (candidates.length === 0) {
-          return new Response(generatePlaceholderSvg(rawLoc, rawCam), {
-            status: 404,
+        if (matchedObjects.length === 0) {
+          const placeholderSvg = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+              <rect width="100%" height="100%" fill="#0a0e17"/>
+              <circle cx="320" cy="140" r="32" fill="#151d2e"/>
+              <path d="M308 132h24v16h-24zM314 126h12v4h-12z" fill="#38bdf8"/>
+              <text x="50%" y="200" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16" text-anchor="middle" font-weight="600">Awaiting Camera Snapshot</text>
+              <text x="50%" y="225" fill="#475569" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" text-anchor="middle">${escapeHtml(loc)} / ${escapeHtml(cam)}</text>
+            </svg>
+          `.trim();
+
+          return new Response(placeholderSvg, {
+            status: 200,
             headers: {
               'Content-Type': 'image/svg+xml',
               'Cache-Control': 'no-cache, no-store, must-revalidate',
-              'Access-Control-Allow-Origin': '*'
+              ...corsHeaders()
             }
           });
         }
 
-        // Sort descending by uploaded timestamp
-        candidates.sort((a, b) => new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime());
-        const latestKey = candidates[0].key;
+        const latestMeta = matchedObjects.sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded))[0];
+        const snapshotObject = await env.MEDIA_BUCKET.get(latestMeta.key);
 
-        const object = await env.MEDIA_BUCKET.get(latestKey);
-        if (!object) {
-          return jsonResponse({ error: 'Object key missing from storage' }, 404);
+        if (!snapshotObject) {
+          return jsonResponse({ error: 'Snapshot object could not be retrieved' }, 404);
         }
 
-        const headers = new Headers();
-        headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
-        headers.set('Cache-Control', 'public, max-age=1, s-maxage=1, must-revalidate');
-        headers.set('ETag', object.httpEtag);
-        headers.set('Access-Control-Allow-Origin', '*');
-
-        return new Response(object.body, { headers });
-      }
-
-      // ------------------------------------------------------------
-      // 3. ADMIN TABLE EXPLORER ENDPOINTS
-      // ------------------------------------------------------------
-      if (pathname === '/api/admin/tables' && request.method === 'GET') {
-        const tablesQuery = await env.DB.prepare(
-          `SELECT name FROM sqlite_master 
-           WHERE type='table' 
-             AND name NOT LIKE 'sqlite_%' 
-             AND name NOT LIKE '_cf_%'
-           ORDER BY name ASC`
-        ).all();
-
-        return jsonResponse({ tables: (tablesQuery.results || []).map(r => r.name) });
-      }
-
-      if (pathname === '/api/admin/table-data' && request.method === 'GET') {
-        const tableName = (url.searchParams.get('table') || '').trim();
-        const allowedTables = ['locations', 'cameras', 'users'];
-
-        if (!allowedTables.includes(tableName)) {
-          return jsonResponse({ error: 'Unauthorized or invalid table name.' }, 400);
-        }
-
-        const schemaQuery = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all();
-        const rowsQuery = await env.DB.prepare(`SELECT * FROM ${tableName} LIMIT 100`).all();
-
-        return jsonResponse({
-          columns: schemaQuery.results || [],
-          rows: rowsQuery.results || []
+        return new Response(snapshotObject.body, {
+          status: 200,
+          headers: {
+            'Content-Type': snapshotObject.httpMetadata?.contentType || 'image/jpeg',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'X-Snapshot-Time': latestMeta.uploaded.toISOString(),
+            ...corsHeaders()
+          }
         });
+      } catch (err) {
+        console.error('R2 retrieval error (/api/snapshot/latest):', err);
+        return jsonResponse({
+          error: 'Failed to retrieve snapshot from storage',
+          details: err?.message || String(err)
+        }, 500);
       }
-
-      if (pathname === '/api/admin/update-row' && request.method === 'POST') {
-        const { table, pkColumn, pkValue, updates } = await request.json().catch(() => ({}));
-        const allowedTables = ['locations', 'cameras', 'users'];
-
-        if (!allowedTables.includes(table) || !pkColumn || pkValue === undefined || !updates) {
-          return jsonResponse({ error: 'Malformed update payload.' }, 400);
-        }
-
-        // Exclude immutable columns
-        const keys = Object.keys(updates).filter(k => k !== 'created_at');
-        if (keys.length === 0) {
-          return jsonResponse({ error: 'No fields to update.' }, 400);
-        }
-
-        const setClause = keys.map(k => `${k} = ?`).join(', ');
-        const values = keys.map(k => updates[k]);
-        values.push(pkValue);
-
-        await env.DB.prepare(`UPDATE ${table} SET ${setClause} WHERE ${pkColumn} = ?`)
-          .bind(...values)
-          .run();
-
-        return jsonResponse({ success: true });
-      }
-
-      // ------------------------------------------------------------
-      // 4. STATIC ASSET / SPA DISPATCH
-      // ------------------------------------------------------------
-      if (env.ASSETS) {
-        return await env.ASSETS.fetch(request);
-      }
-
-      return new Response('AISYS Edge API operational.', { status: 200 });
-
-    } catch (err) {
-      return jsonResponse({ error: err.message || 'Internal Edge Runtime Error' }, 500);
     }
+
+    // 4. User Authentication & Registration via RPC
+    if (url.pathname === '/api/login' && request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      }
+
+      try {
+        const result = await env.DB.authenticateOrRegisterUser(
+          body.locationId,
+          body.username,
+          body.password
+        );
+
+        if (result.success) {
+          return jsonResponse({
+            status: 'success',
+            isNewUser: result.isNewUser,
+            user: result.user
+          }, 200);
+        }
+
+        return jsonResponse({ error: result.error }, result.status || 401);
+      } catch (err) {
+        console.error('Database RPC error (/api/login):', err);
+        return jsonResponse({
+          error: 'Database service unavailable',
+          details: err?.message || String(err)
+        }, 502);
+      }
+    }
+
+    // 5. Admin: Read All Database Tables
+    if (url.pathname === '/api/admin/tables' && request.method === 'GET') {
+      const adminUserId = request.headers.get('x-admin-userid');
+
+      try {
+        const result = await env.DB.adminGetAllTables(adminUserId);
+        return jsonResponse(result, result.status || (result.success ? 200 : 403));
+      } catch (err) {
+        console.error('Database RPC error (/api/admin/tables):', err);
+        return jsonResponse({
+          error: 'Database service unavailable',
+          details: err?.message || String(err)
+        }, 502);
+      }
+    }
+
+    // 6. Admin: Save / Update Records
+    if (url.pathname === '/api/admin/tables/save' && request.method === 'POST') {
+      const adminUserId = request.headers.get('x-admin-userid');
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      }
+
+      try {
+        const result = await env.DB.adminSaveRecord(
+          adminUserId,
+          body.table,
+          body.data,
+          !!body.isUpdate
+        );
+        return jsonResponse(result, result.status || (result.success ? 200 : 400));
+      } catch (err) {
+        console.error('Database RPC error (/api/admin/tables/save):', err);
+        return jsonResponse({
+          error: 'Database service unavailable',
+          details: err?.message || String(err)
+        }, 502);
+      }
+    }
+
+    // 7. Landing Page Waitlist
+    if (url.pathname === '/api/waitlist' && request.method === 'POST') {
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: 'Invalid JSON body' }, 400);
+      }
+
+      const email = (body?.email ?? '').trim().toLowerCase();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return jsonResponse({ error: 'A valid email address is required' }, 400);
+      }
+
+      if (env.WAITLIST_KV) {
+        try {
+          await env.WAITLIST_KV.put(
+            `waitlist:${email}:${Date.now()}`,
+            JSON.stringify({ email, submittedAt: new Date().toISOString() })
+          );
+        } catch (err) {
+          console.error('Waitlist KV write error:', err);
+        }
+      }
+
+      return jsonResponse({ message: "You're on the list!", email }, 200);
+    }
+
+    // 8. Health Check
+    if (url.pathname === '/api/health') {
+      return jsonResponse({
+        status: 'ok',
+        service: 'aisys-gateway',
+        timestamp: Date.now()
+      }, 200);
+    }
+
+    // 9. Static Asset Fallback (public/ folder: live.html, live.js, styles.css, etc.)
+    if (env.ASSETS) {
+      return env.ASSETS.fetch(request);
+    }
+
+    return new Response('Not Found', {
+      status: 404,
+      headers: corsHeaders()
+    });
   }
 };
 
-// ============================================================
-// HELPER UTILITIES
-// ============================================================
-
-async function verifyPassword(inputPassword, storedHash) {
-  if (!inputPassword || !storedHash) return false;
-
-  // 1. Plaintext direct match
-  if (storedHash === inputPassword) return true;
-
-  // 2. SHA-256 hex match
-  const encoder = new TextEncoder();
-  const data = encoder.encode(inputPassword);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  return storedHash.toLowerCase() === hashHex.toLowerCase();
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-admin-userid, x-media-token'
+  };
 }
 
 function jsonResponse(data, status = 200) {
@@ -291,34 +293,16 @@ function jsonResponse(data, status = 200) {
     status,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      ...corsHeaders()
     }
   });
 }
 
-function handleCors() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Max-Age': '86400'
-    }
-  });
-}
-
-function generatePlaceholderSvg(location, camera) {
-  return `
-  <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
-    <rect width="100%" height="100%" fill="#0a0f1d"/>
-    <rect x="2" y="2" width="636" height="356" fill="none" stroke="#1e293b" stroke-width="2"/>
-    <circle cx="320" cy="150" r="32" fill="none" stroke="#38bdf8" stroke-width="3" opacity="0.6"/>
-    <circle cx="320" cy="150" r="8" fill="#38bdf8" opacity="0.8"/>
-    <text x="320" y="215" fill="#f8fafc" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="15" font-weight="600" text-anchor="middle">Awaiting Snapshot</text>
-    <text x="320" y="240" fill="#64748b" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="12" text-anchor="middle">${location} / ${camera}</text>
-  </svg>
-  `.trim();
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
