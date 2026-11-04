@@ -119,7 +119,7 @@
           const img = document.createElement('img');
           img.className = 'snapshot-img';
           img.alt = `${cam.name} Snapshot`;
-          img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.camera_id)}&_t=${Date.now()}`;
+          img.src = `/api/snapshot/latest?location=${encodeURIComponent(user.locationId)}&cam=${encodeURIComponent(cam.name)}&_t=${Date.now()}`;
           img.style.cursor = 'pointer';
           img.title = 'Click to switch to live feed';
           img.addEventListener('click', () => {
