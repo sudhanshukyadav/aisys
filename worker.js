@@ -8,9 +8,7 @@ export default {
     }
 
     try {
-      // ------------------------------------------------------------
       // 1. AUTHENTICATION & LOGIN
-      // ------------------------------------------------------------
       if ((pathname === '/api/auth/login' || pathname === '/api/login') && request.method === 'POST') {
         const body = await request.json().catch(() => ({}));
         const rawLoc = (body.locationId || body.locationCode || body.location || '').trim();
@@ -82,9 +80,7 @@ export default {
         });
       }
 
-      // ------------------------------------------------------------
-      // 2. SNAPSHOT RETRIEVAL (/api/snapshot/latest)
-      // ------------------------------------------------------------
+      // 2. SNAPSHOT RETRIEVAL
       if (pathname === '/api/snapshot/latest' && request.method === 'GET') {
         const rawLoc = (url.searchParams.get('location') || '').trim();
         const rawCam = (url.searchParams.get('cam') || url.searchParams.get('camera') || '').trim();
@@ -197,9 +193,7 @@ export default {
         return new Response(object.body, { headers });
       }
 
-      // ------------------------------------------------------------
       // 3. STATIC SPA ROUTING
-      // ------------------------------------------------------------
       if (env.ASSETS) {
         let response = await env.ASSETS.fetch(request);
         if (response.status === 404 && !pathname.includes('.')) {
